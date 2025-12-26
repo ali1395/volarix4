@@ -199,11 +199,65 @@ volarix4/
 ├── trade_setup.py       # SL/TP calculation
 ├── utils.py             # Helper functions
 ├── config.py            # Configuration
+├── logger.py            # Logging system
+├── monitor.py           # Performance monitoring
+├── test_api.py          # API test suite
+├── backtest.py          # Development backtest
 ├── start.py             # Startup script
 ├── requirements.txt     # Dependencies
 ├── .env.example         # Environment template
 └── README.md           # This file
 ```
+
+## Testing & Validation
+
+### Run Test Suite
+
+Comprehensive API testing:
+
+```bash
+python test_api.py
+```
+
+Tests include:
+- Health check endpoint
+- Signal generation with valid/invalid inputs
+- Volarix 3 compatibility verification
+- Multiple symbol testing
+- Response time performance
+
+### Development Backtest
+
+Run realistic bar-by-bar backtest:
+
+```bash
+python backtest.py
+```
+
+**⚠ IMPORTANT NOTE**: This backtest is for development validation only. Final backtesting should be done using a MetaTrader 5 Expert Advisor for accurate results with real broker conditions, spreads, and slippage.
+
+The development backtest provides:
+- Realistic SL/TP management
+- No look-ahead bias
+- Bar-by-bar walk-forward simulation
+- Performance statistics (win rate, profit factor, etc.)
+
+### Performance Monitoring
+
+View API performance stats:
+
+```python
+from monitor import monitor
+
+# After running some requests
+monitor.print_stats()
+```
+
+Tracks:
+- Request count and success rate
+- Response times (avg/min/max)
+- Signal distribution
+- Top symbols requested
 
 ## Requirements
 
@@ -234,11 +288,26 @@ MIT License - Free to use and modify
 
 ## Support
 
-For issues or questions, check the logs or test individual modules:
+### Testing Individual Modules
+
+Each module has standalone tests:
 
 ```bash
 python data.py          # Test MT5 connection
 python sr_levels.py     # Test S/R detection
 python rejection.py     # Test rejection patterns
 python trade_setup.py   # Test trade setup
+python logger.py        # Test logging system
+python monitor.py       # Test performance monitoring
+```
+
+### Check Logs
+
+Detailed logs are saved in `logs/volarix4_YYYY-MM-DD.log`
+
+### Run Full Test Suite
+
+```bash
+python test_api.py      # Complete API testing
+python backtest.py      # Development backtest
 ```

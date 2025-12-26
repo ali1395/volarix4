@@ -10,11 +10,14 @@ from data import fetch_ohlc, is_valid_session
 from sr_levels import detect_sr_levels
 from rejection import find_rejection_candle
 from trade_setup import calculate_trade_setup
-from utils import calculate_pip_value, setup_logging
+from utils import calculate_pip_value
 from config import SR_CONFIG, REJECTION_CONFIG, RISK_CONFIG
+from logger import setup_logger, log_signal_details
+from monitor import monitor
+import time
 
 # Initialize logger
-logger = setup_logging("INFO")
+logger = setup_logger("volarix4", level="INFO")
 
 app = FastAPI(title="Volarix 4", version="4.0.0", description="S/R Bounce Trading API")
 
@@ -75,18 +78,33 @@ async def generate_signal(request: SignalRequest) -> SignalResponse:
     Returns:
         Signal response with trade setup or HOLD
     """
+    start_time = time.time()
+
     try:
-        logger.info(f"Processing signal request: {request.symbol} {request.timeframe}")
+        # Log request
+        log_signal_details(logger, "REQUEST", {
+            'symbol': request.symbol,
+            'timeframe': request.timeframe,
+            'bars': request.bars
+        })
 
         # 1. Fetch OHLC data from MT5
-        logger.debug("Fetching OHLC data from MT5...")
         df = fetch_ohlc(request.symbol, request.timeframe, request.bars)
-        logger.info(f"Fetched {len(df)} bars for {request.symbol}")
+        log_signal_details(logger, "DATA_FETCH", {
+            'bars_count': len(df),
+            'start_date': str(df['time'].iloc[0]),
+            'end_date': str(df['time'].iloc[-1])
+        })
 
         # 2. Session filter (check if latest bar is in valid session)
         last_bar_time = df.iloc[-1]['time']
-        if not is_valid_session(last_bar_time):
-            logger.info(f"Outside trading session: {last_bar_time}")
+        session_valid = is_valid_session(last_bar_time)
+        log_signal_details(logger, "SESSION_CHECK", {
+            'valid': session_valid,
+            'timestamp': str(last_bar_time)
+        })
+
+        if not session_valid:
             return SignalResponse(
                 signal="HOLD",
                 confidence=0.0,
@@ -102,14 +120,16 @@ async def generate_signal(request: SignalRequest) -> SignalResponse:
             )
 
         # 3. Detect S/R levels
-        logger.debug("Detecting S/R levels...")
         pip_value = calculate_pip_value(request.symbol)
         levels = detect_sr_levels(
             df,
             min_score=SR_CONFIG["min_level_score"],
             pip_value=pip_value
         )
-        logger.info(f"Detected {len(levels)} S/R levels")
+        log_signal_details(logger, "SR_DETECTION", {
+            'levels_count': len(levels),
+            'levels': levels[:5]  # Log top 5
+        })
 
         if not levels:
             logger.info("No significant S/R levels found")
@@ -128,7 +148,6 @@ async def generate_signal(request: SignalRequest) -> SignalResponse:
             )
 
         # 4. Find rejection candles
-        logger.debug("Searching for rejection patterns...")
         rejection = find_rejection_candle(
             df,
             levels,
@@ -137,7 +156,7 @@ async def generate_signal(request: SignalRequest) -> SignalResponse:
         )
 
         if not rejection:
-            logger.info("No rejection pattern found")
+            log_signal_details(logger, "REJECTION_SEARCH", {'found': False})
             return SignalResponse(
                 signal="HOLD",
                 confidence=0.0,
@@ -152,10 +171,15 @@ async def generate_signal(request: SignalRequest) -> SignalResponse:
                 reason="No rejection pattern at S/R levels"
             )
 
-        logger.info(f"Rejection found: {rejection['direction']} at {rejection['level']}")
+        log_signal_details(logger, "REJECTION_SEARCH", {
+            'found': True,
+            'direction': rejection['direction'],
+            'level': rejection['level'],
+            'level_score': rejection['level_score'],
+            'confidence': rejection['confidence']
+        })
 
         # 5. Calculate trade setup
-        logger.debug("Calculating trade setup...")
         trade_setup = calculate_trade_setup(
             rejection,
             sl_pips_beyond=RISK_CONFIG["sl_pips_beyond"],
@@ -164,13 +188,51 @@ async def generate_signal(request: SignalRequest) -> SignalResponse:
             pip_value=pip_value
         )
 
-        logger.info(f"Signal generated: {trade_setup['signal']} with {trade_setup['confidence']} confidence")
+        log_signal_details(logger, "TRADE_SETUP", {
+            'direction': trade_setup['signal'],
+            'entry': trade_setup['entry'],
+            'sl': trade_setup['sl'],
+            'tp1': trade_setup['tp1'],
+            'tp2': trade_setup['tp2'],
+            'tp3': trade_setup['tp3'],
+            'sl_pips': (abs(trade_setup['entry'] - trade_setup['sl']) / pip_value)
+        })
+
+        log_signal_details(logger, "FINAL_SIGNAL", {
+            'signal': trade_setup['signal'],
+            'confidence': trade_setup['confidence'],
+            'reason': trade_setup['reason']
+        })
+
+        # Record performance metrics
+        duration = time.time() - start_time
+        monitor.record_request(
+            duration=duration,
+            signal=trade_setup['signal'],
+            success=True,
+            symbol=request.symbol,
+            confidence=trade_setup['confidence']
+        )
 
         # 6. Return response
         return SignalResponse(**trade_setup)
 
     except Exception as e:
-        logger.error(f"Error processing signal: {str(e)}", exc_info=True)
+        log_signal_details(logger, "ERROR", {
+            'error': str(e),
+            'exc_info': True
+        })
+
+        # Record failed request
+        duration = time.time() - start_time
+        monitor.record_request(
+            duration=duration,
+            signal="HOLD",
+            success=False,
+            symbol=request.symbol,
+            confidence=0.0
+        )
+
         # Return HOLD signal with error reason
         return SignalResponse(
             signal="HOLD",
