@@ -38,7 +38,7 @@ struct OHLCVBar
 //====================================================================
 input string SymbolToCheck = "EURUSD";           // Symbol to trade
 input ENUM_TIMEFRAMES Timeframe = PERIOD_H1;     // Timeframe
-input int    LookbackBars  = 50;                 // Number of bars to send to API
+input int    LookbackBars  = 400;                // Number of bars to send to API
 input string API_URL = "http://localhost:8000";  // Volarix 4 API URL
 
 // Trade Management

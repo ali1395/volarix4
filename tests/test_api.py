@@ -59,7 +59,7 @@ def test_signal_endpoint_valid():
     payload = {
         "symbol": "EURUSD",
         "timeframe": "H1",
-        "bars": 50
+        "bars": 400
     }
 
     print(f"  Request: {payload}")
@@ -98,7 +98,7 @@ def test_signal_endpoint_invalid():
     payload = {
         "symbol": "INVALID",
         "timeframe": "H1",
-        "bars": 50
+        "bars": 400
     }
 
     print(f"  Request: {payload}")
@@ -119,7 +119,7 @@ def test_response_format_compatibility():
     print("\n[TEST 5] Volarix 3 Compatibility Check")
     print("-" * 60)
 
-    payload = {"symbol": "EURUSD", "timeframe": "H1", "bars": 50}
+    payload = {"symbol": "EURUSD", "timeframe": "H1", "bars": 400}
     response = requests.post(f"{API_URL}/signal", json=payload)
     data = response.json()
 
@@ -164,7 +164,7 @@ def test_multiple_symbols():
     results = []
 
     for symbol in symbols:
-        payload = {"symbol": symbol, "timeframe": "H1", "bars": 50}
+        payload = {"symbol": symbol, "timeframe": "H1", "bars": 400}
 
         try:
             response = requests.post(f"{API_URL}/signal", json=payload, timeout=10)
@@ -188,7 +188,7 @@ def test_response_times():
     print("\n[TEST 7] Response Time Performance")
     print("-" * 60)
 
-    payload = {"symbol": "EURUSD", "timeframe": "H1", "bars": 50}
+    payload = {"symbol": "EURUSD", "timeframe": "H1", "bars": 400}
     times = []
 
     print("  Running 5 consecutive requests...")

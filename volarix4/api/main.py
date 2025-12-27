@@ -334,19 +334,39 @@ def create_app() -> FastAPI:
                 )
 
             # 5. Validate S/R levels (filter broken levels)
+            logger.info("Checking Broken Level Filter...")
             sr_validator = SRLevelValidator(pip_value=pip_value)
             levels_before = len(levels)
+
+            # Log level details before validation
+            logger.info(f"S/R Levels before validation: {levels_before}")
+            for i, level_dict in enumerate(levels[:5], 1):  # Log top 5
+                logger.info(f"  Level {i}: {level_dict['level']:.5f} ({level_dict['type']}, score: {level_dict['score']:.1f})")
+
             levels = sr_validator.validate_levels(levels, df)
             levels_after = len(levels)
+
+            broken_info = sr_validator.get_broken_levels_info()
+            if broken_info:
+                logger.info(f"Broken levels in cooldown: {len(broken_info)}")
+                for broken in broken_info:
+                    logger.info(f"  - Level {broken['level']:.5f}: Broken {broken['hours_ago']:.1f}h ago, {broken['cooldown_remaining']:.1f}h cooldown remaining")
 
             log_signal_details(logger, "SR_VALIDATION", {
                 'levels_before': levels_before,
                 'levels_after': levels_after,
-                'broken_levels': sr_validator.get_broken_levels_info()
+                'broken_levels': broken_info
             })
 
+            if levels_after < levels_before:
+                logger.info(f"Broken Level Filter: {levels_before - levels_after} levels filtered out")
+            else:
+                logger.info(f"Broken Level Filter: PASSED - All levels valid")
+
             if not levels:
-                logger.info("All S/R levels invalidated (broken recently)")
+                logger.info("Broken Level Filter: FAILED - All levels broken or in cooldown")
+                logger.info("Signal Rejected - Reason: All S/R levels broken or in cooldown period")
+
                 return SignalResponse(
                     signal="HOLD",
                     confidence=0.0,
@@ -360,6 +380,8 @@ def create_app() -> FastAPI:
                     tp3_percent=RISK_CONFIG["tp3_percent"],
                     reason="All S/R levels broken or in cooldown period"
                 )
+
+            logger.info(f"Valid S/R Levels after validation: {levels_after}")
 
             # 6. Find rejection candles
             rejection = find_rejection_candle(
@@ -393,9 +415,38 @@ def create_app() -> FastAPI:
                 'confidence': rejection['confidence']
             })
 
+            # Detailed rejection pattern logging
+            logger.info("=" * 70)
+            logger.info(f"Rejection Found [{rejection['direction']}] at {rejection['entry']:.5f} (Level: {rejection['level']:.5f})")
+
+            # Get candle details for logging
+            candle_idx = rejection.get('candle_index', -1)
+            if candle_idx is not None and candle_idx < 0:
+                candle = df.iloc[candle_idx]
+                wick_size = candle['high'] - candle['low']
+                body_size = abs(candle['close'] - candle['open'])
+                wick_body_ratio = wick_size / body_size if body_size > 0 else 0
+
+                logger.info(f"Pattern Details:")
+                logger.info(f"  - Candle Index: {candle_idx}")
+                logger.info(f"  - Open: {candle['open']:.5f}, High: {candle['high']:.5f}, Low: {candle['low']:.5f}, Close: {candle['close']:.5f}")
+                logger.info(f"  - Wick Size: {wick_size / pip_value:.1f} pips")
+                logger.info(f"  - Body Size: {body_size / pip_value:.1f} pips")
+                logger.info(f"  - Wick/Body Ratio: {wick_body_ratio:.2f}")
+                logger.info(f"  - Confidence Score: {rejection['confidence']:.3f}")
+                logger.info(f"  - Level Score: {rejection['level_score']:.1f}")
+                logger.info(f"  - Distance from Level: {abs(rejection['entry'] - rejection['level']) / pip_value:.1f} pips")
+            logger.info("=" * 70)
+
             # 6.5. Check minimum confidence threshold
+            logger.info("Checking Confidence Score...")
             min_confidence = REJECTION_CONFIG["min_confidence"]
+            logger.info(f"Rejection Score: {rejection['confidence']:.3f}, Min Required: {min_confidence}")
+
             if rejection['confidence'] < min_confidence:
+                logger.info(f"Confidence Filter: FAILED - Score {rejection['confidence']:.3f} below threshold {min_confidence}")
+                logger.info("Signal Rejected - Reason: Confidence too low")
+
                 log_signal_details(logger, "CONFIDENCE_CHECK", {
                     'confidence': rejection['confidence'],
                     'min_required': min_confidence,
@@ -416,6 +467,8 @@ def create_app() -> FastAPI:
                     reason=f"Confidence too low ({rejection['confidence']:.2f} < {min_confidence})"
                 )
 
+            logger.info(f"Confidence Filter: PASSED")
+
             log_signal_details(logger, "CONFIDENCE_CHECK", {
                 'confidence': rejection['confidence'],
                 'min_required': min_confidence,
@@ -423,6 +476,12 @@ def create_app() -> FastAPI:
             })
 
             # 7. Validate signal aligns with trend
+            logger.info("Checking Trend Filter...")
+            current_close = df['close'].iloc[-1]
+            logger.info(f"EMA Fast (20): {trend_info['ema_fast']:.5f}, EMA Slow (50): {trend_info['ema_slow']:.5f}")
+            logger.info(f"Current Close: {current_close:.5f}, Signal Direction: {rejection['direction']}")
+            logger.info(f"Trend: {trend_info['trend']}, Strength: {trend_info['strength']:.3f}")
+
             trend_validation = validate_signal_with_trend(rejection['direction'], trend_info)
             log_signal_details(logger, "TREND_VALIDATION", {
                 'signal_direction': rejection['direction'],
@@ -431,6 +490,9 @@ def create_app() -> FastAPI:
             })
 
             if not trend_validation['valid']:
+                logger.info(f"Trend Filter: FAILED - {trend_validation['reason']}")
+                logger.info(f"Signal Rejected - Reason: {trend_validation['reason']}")
+
                 return SignalResponse(
                     signal="HOLD",
                     confidence=0.0,
@@ -445,7 +507,10 @@ def create_app() -> FastAPI:
                     reason=trend_validation['reason']
                 )
 
+            logger.info(f"Trend Filter: PASSED - Signal aligns with {trend_info['trend']}")
+
             # 7.5. Check signal cooldown (4 hours minimum between signals)
+            logger.info("Checking Signal Cooldown...")
             cooldown_hours = 4
             current_time = datetime.now()
 
@@ -455,6 +520,10 @@ def create_app() -> FastAPI:
 
                 if time_since_last_signal < timedelta(hours=cooldown_hours):
                     hours_remaining = cooldown_hours - (time_since_last_signal.total_seconds() / 3600)
+                    logger.info(f"Last Signal: {last_signal_time.strftime('%Y-%m-%d %H:%M:%S')}, Hours Since: {time_since_last_signal.total_seconds() / 3600:.1f}h")
+                    logger.info(f"Cooldown Filter: FAILED - {hours_remaining:.1f}h remaining in cooldown period")
+                    logger.info(f"Signal Rejected - Reason: Signal cooldown active")
+
                     log_signal_details(logger, "COOLDOWN_CHECK", {
                         'in_cooldown': True,
                         'last_signal': last_signal_time.isoformat(),
@@ -475,9 +544,12 @@ def create_app() -> FastAPI:
                         reason=f"Signal cooldown active ({hours_remaining:.1f}h remaining)"
                     )
 
+            logger.info(f"Cooldown Filter: PASSED - No recent signals")
             log_signal_details(logger, "COOLDOWN_CHECK", {'in_cooldown': False})
 
             # 8. Calculate trade setup with risk validation
+            logger.info("Calculating Trade Setup and Risk Parameters...")
+
             trade_setup = calculate_trade_setup(
                 rejection,
                 sl_pips_beyond=RISK_CONFIG["sl_pips_beyond"],
@@ -498,6 +570,13 @@ def create_app() -> FastAPI:
                 ))
                 sl_pips = sl_distance / pip_value
 
+                logger.info(f"Risk Parameters:")
+                logger.info(f"  - Calculated SL: {sl_pips:.1f} pips")
+                logger.info(f"  - Max Allowed SL: {RISK_CONFIG['max_sl_pips']:.1f} pips")
+                logger.info(f"  - Min Required R:R: {RISK_CONFIG['min_rr']:.1f}")
+                logger.info(f"Risk Filter: FAILED - SL exceeds maximum or R:R below minimum")
+                logger.info(f"Signal Rejected - Reason: Risk parameters exceeded")
+
                 return SignalResponse(
                     signal="HOLD",
                     confidence=0.0,
@@ -511,6 +590,8 @@ def create_app() -> FastAPI:
                     tp3_percent=RISK_CONFIG["tp3_percent"],
                     reason=f"Risk parameters exceeded (SL: {sl_pips:.1f} pips, max: {RISK_CONFIG['max_sl_pips']}, min R:R: {RISK_CONFIG['min_rr']})"
                 )
+
+            logger.info(f"Risk Filter: PASSED")
 
             log_signal_details(logger, "TRADE_SETUP", {
                 'direction': trade_setup['signal'],
@@ -527,6 +608,18 @@ def create_app() -> FastAPI:
                 'confidence': trade_setup['confidence'],
                 'reason': trade_setup['reason']
             })
+
+            # Final decision logging
+            logger.info("=" * 70)
+            logger.info("All Filters: PASSED")
+            logger.info(f"Trade Setup: {trade_setup['signal']} at {trade_setup['entry']:.5f}")
+            logger.info(f"  - SL: {trade_setup['sl']:.5f} ({abs(trade_setup['entry'] - trade_setup['sl']) / pip_value:.1f} pips)")
+            logger.info(f"  - TP1: {trade_setup['tp1']:.5f} ({abs(trade_setup['tp1'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp1_percent']*100:.0f}%)")
+            logger.info(f"  - TP2: {trade_setup['tp2']:.5f} ({abs(trade_setup['tp2'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp2_percent']*100:.0f}%)")
+            logger.info(f"  - TP3: {trade_setup['tp3']:.5f} ({abs(trade_setup['tp3'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp3_percent']*100:.0f}%)")
+            logger.info(f"  - Confidence: {trade_setup['confidence']:.3f}")
+            logger.info(f"Final Signal: GENERATED")
+            logger.info("=" * 70)
 
             # Update signal cooldown tracker (only for BUY/SELL signals)
             if trade_setup['signal'] in ['BUY', 'SELL']:

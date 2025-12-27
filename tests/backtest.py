@@ -161,7 +161,7 @@ def run_backtest(
         symbol: str = "EURUSD",
         timeframe: str = "H1",
         bars: int = 1000,
-        lookback_bars: int = 50
+        lookback_bars: int = 400
 ):
     """
     Run realistic bar-by-bar backtest.
@@ -364,4 +364,4 @@ def run_backtest(
 
 if __name__ == "__main__":
     # Run backtest with default parameters
-    run_backtest(symbol="EURUSD", timeframe="H1", bars=500, lookback_bars=50)
+    run_backtest(symbol="EURUSD", timeframe="H1", bars=500, lookback_bars=400)

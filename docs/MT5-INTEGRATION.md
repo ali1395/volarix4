@@ -150,7 +150,7 @@ Verify API is running:
    ```
    Symbol: EURUSD
    Timeframe: H1
-   Lookback Bars: 50
+   Lookback Bars: 400
    Risk Percent: 1.0
    Max Positions: 1
    Enable Trading: true (for live), false (for testing)
@@ -169,7 +169,7 @@ Verify API is running:
 Volarix 4 EA Started - S/R Bounce Strategy
 Symbol: EURUSD
 Timeframe: H1
-Lookback Bars: 50
+Lookback Bars: 400
 API URL: http://localhost:8000
 Auto-Trading: ENABLED
 ```
@@ -180,7 +180,7 @@ Auto-Trading: ENABLED
 ```
 === DLL Called ===
 OHLCVBar struct size: 44 bytes (should be 44)  ← MUST BE 44!
-Bar count: 50
+Bar count: 400
 First bar: timestamp=1705888800, open=1.08921, close=1.09012
 Second bar: timestamp=1705892400, open=1.09014, close=1.09020  ← NOT ZEROS!
 ```
@@ -191,7 +191,7 @@ Second bar: timestamp=1705892400, open=1.09014, close=1.09020  ← NOT ZEROS!
 ```
 [INFO] >> POST /signal
 [INFO] Signal request: EURUSD [Single-TF]
-[INFO] [DEBUG] Bars with time=0: 0 out of 50  ← SHOULD BE 0!
+[INFO] [DEBUG] Bars with time=0: 0 out of 400  ← SHOULD BE 0!
 [INFO] [DEBUG] First timestamp: 2024-01-22 02:00:00  ← CORRECT YEAR!
 [INFO] S/R Levels Detected: 3
 [INFO] Rejection Found: SELL at 1.04368
@@ -305,7 +305,7 @@ Then rebuild DLL.
 ```mql5
 input string SymbolToCheck = "EURUSD";
 input ENUM_TIMEFRAMES Timeframe = PERIOD_H1;
-input int    LookbackBars  = 50;          // More bars = slower but more data
+input int    LookbackBars  = 400;         // More bars = slower but more data
 input double RiskPercent = 1.0;           // Risk per trade (%)
 input int    MaxPositions = 1;
 input bool   EnableTrading = true;
@@ -400,7 +400,7 @@ When things aren't working:
 - [ ] "Allow DLL imports" is enabled in MT5
 - [ ] DLL compiled for x64 (not x86)
 - [ ] DLL debug log shows struct size = 44 bytes
-- [ ] API log shows "Bars with time=0: 0 out of 50"
+- [ ] API log shows "Bars with time=0: 0 out of 400"
 - [ ] Timestamps are correct year (2024+, not 1970)
 - [ ] EA shows parameters correctly on attach
 - [ ] AutoTrading is enabled (😊 face)
@@ -431,7 +431,7 @@ If you encounter issues not covered here:
 
 **Success Indicators:**
 - ✅ Struct size: 44 bytes
-- ✅ Bars with time=0: 0 out of 50
+- ✅ Bars with time=0: 0 out of 400
 - ✅ Correct dates (2024+)
 - ✅ SL and TP set on trades
 - ✅ Deterministic backtest results

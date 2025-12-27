@@ -123,7 +123,7 @@ Content-Type: application/json
 |-------|------|----------|-------------|
 | `symbol` | string | Yes | Trading pair symbol (e.g., "EURUSD", "GBPUSD") |
 | `timeframe` | string | Yes | Chart timeframe (M1, M5, M15, M30, H1, H4, D1, W1) |
-| `data` | array | Yes | OHLCV bars (minimum 50 recommended for S/R detection) |
+| `data` | array | Yes | OHLCV bars (minimum 400 recommended for S/R detection) |
 | `execution_timeframe` | string | No | Override timeframe (defaults to `timeframe`) |
 | `context_timeframe` | string | No | Multi-TF context (Volarix 3 compatibility, ignored) |
 | `context_data` | array | No | Context TF bars (Volarix 3 compatibility, ignored) |
@@ -361,7 +361,7 @@ console.log(`Signal: ${signal.signal}`);
 
 #### Best Practices
 
-1. **Minimum Data**: Send at least 50 bars for reliable S/R detection
+1. **Minimum Data**: Send at least 400 bars for reliable S/R detection and EMA trend filter
 2. **Data Quality**: Ensure OHLCV data is accurate and complete
 3. **Timestamps**: Use Unix timestamps in seconds (not milliseconds)
 4. **Timeframes**: Use standard MT5 timeframe strings (M1, M5, M15, M30, H1, H4, D1, W1)
@@ -451,7 +451,7 @@ def execute_trade(signal):
 
 # Main loop
 while True:
-    bars = fetch_market_data("EURUSD", "H1", 50)  # Your data source
+    bars = fetch_market_data("EURUSD", "H1", 400)  # Your data source
     signal = get_signal("EURUSD", "H1", bars)
     execute_trade(signal)
     time.sleep(3600)  # Check every hour
@@ -521,7 +521,7 @@ async function getSignal(symbol, timeframe, bars) {
 }
 
 // Usage
-const bars = fetchMarketData('EURUSD', 'H1', 50);
+const bars = fetchMarketData('EURUSD', 'H1', 400);
 getSignal('EURUSD', 'H1', bars);
 ```
 
@@ -578,7 +578,7 @@ except Exception as e:
 
 1. **Batch Processing**: If checking multiple symbols, use async requests
 2. **Caching**: Cache S/R levels if analyzing same symbol repeatedly
-3. **Data Size**: Send minimum required bars (50-100 sufficient)
+3. **Data Size**: Send 400+ bars for optimal S/R detection and trend analysis
 4. **Connection Pooling**: Reuse HTTP connections for multiple requests
 
 ## Monitoring
@@ -614,7 +614,7 @@ API logs all requests to `logs/volarix4_YYYY-MM-DD.log`:
 ```
 2024-01-15 10:30:45 - INFO - >> POST /signal
 2024-01-15 10:30:45 - INFO - Signal request: EURUSD [Single-TF] | Fields: tf=H1 ...
-2024-01-15 10:30:45 - INFO - DATA_FETCH: {'bars_count': 50, 'start_date': ...}
+2024-01-15 10:30:45 - INFO - DATA_FETCH: {'bars_count': 400, 'start_date': ...}
 2024-01-15 10:30:45 - INFO - SR_DETECTION: {'levels_count': 3, 'levels': [...]}
 2024-01-15 10:30:45 - INFO - REJECTION_SEARCH: {'found': True, 'direction': 'BUY', ...}
 2024-01-15 10:30:45 - INFO - FINAL_SIGNAL: {'signal': 'BUY', 'confidence': 0.75, ...}

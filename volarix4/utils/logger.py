@@ -159,11 +159,11 @@ if __name__ == "__main__":
     log_signal_details(logger, "REQUEST", {
         'symbol': 'EURUSD',
         'timeframe': 'H1',
-        'bars': 50
+        'bars': 400
     })
 
     log_signal_details(logger, "DATA_FETCH", {
-        'bars_count': 50,
+        'bars_count': 400,
         'start_date': '2024-01-01 00:00',
         'end_date': '2024-01-03 02:00'
     })

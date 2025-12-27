@@ -141,7 +141,7 @@ if __name__ == "__main__":
         # Test 2: Fetch OHLC data
         print("\n2. Testing OHLC data fetch...")
         try:
-            df = fetch_ohlc("EURUSD", "H1", 50)
+            df = fetch_ohlc("EURUSD", "H1", 400)
             print(f"Fetched {len(df)} bars")
             print(f"Columns: {df.columns.tolist()}")
             print(f"\nFirst 3 bars:")

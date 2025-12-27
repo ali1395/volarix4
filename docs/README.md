@@ -81,7 +81,7 @@ Generate trading signal for a symbol/timeframe.
 {
   "symbol": "EURUSD",
   "timeframe": "H1",
-  "bars": 50
+  "bars": 400
 }
 ```
 
@@ -131,7 +131,7 @@ Interactive API documentation (Swagger UI).
 ```bash
 curl -X POST http://localhost:8000/signal \
   -H "Content-Type: application/json" \
-  -d '{"symbol":"EURUSD","timeframe":"H1","bars":50}'
+  -d '{"symbol":"EURUSD","timeframe":"H1","bars":400}'
 ```
 
 ### Using Python
@@ -144,7 +144,7 @@ response = requests.post(
     json={
         "symbol": "EURUSD",
         "timeframe": "H1",
-        "bars": 50
+        "bars": 400
     }
 )
 

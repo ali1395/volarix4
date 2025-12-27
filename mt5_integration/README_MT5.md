@@ -58,7 +58,7 @@ Wait for: `Uvicorn running on http://0.0.0.0:8000`
 3. Configure inputs:
    - **SymbolToCheck**: EURUSD
    - **Timeframe**: H1 (or PERIOD_CURRENT)
-   - **LookbackBars**: 50
+   - **LookbackBars**: 400
    - **API_URL**: http://localhost:8000
    - **RiskPercent**: 1.0
    - **EnableTrading**: false (for testing)
@@ -80,7 +80,7 @@ API Response: Signal=BUY, Confidence=0.75
 **Check API Log:**
 ```
 [INFO] >> POST /signal
-[INFO] Signal request: EURUSD [Single-TF] | Using: exec=H1 | Bars: exec=50
+[INFO] Signal request: EURUSD [Single-TF] | Using: exec=H1 | Bars: exec=400
 [INFO] Final Signal: BUY (Confidence: 0.75)
 [INFO] << POST /signal - Status: 200
 ```
@@ -92,7 +92,7 @@ File: E:\Volarix4Bridge_Debug.txt
 === Volarix 4 API Call ===
 Symbol: EURUSD
 Timeframe: H1
-Bars: 50
+Bars: 400
 API Response (285 bytes): {"signal":"BUY","confidence":0.75,...
 ```
 
@@ -110,7 +110,7 @@ API Response (285 bytes): {"signal":"BUY","confidence":0.75,...
 
 ### No Signals Generated
 - Check API logs for errors
-- Verify enough bars are available (minimum 50)
+- Verify enough bars are available (minimum 400 for trend filter)
 - Check if current time is in London/NY session (3-11am or 8am-4pm EST)
 - HOLD signals are normal (strategy is selective)
 
@@ -128,7 +128,7 @@ API Response (285 bytes): {"signal":"BUY","confidence":0.75,...
 |-----------|---------|-------------|
 | SymbolToCheck | EURUSD | Trading symbol |
 | Timeframe | PERIOD_H1 | Timeframe for signals |
-| LookbackBars | 50 | Bars to send to API |
+| LookbackBars | 400 | Bars to send to API |
 | API_URL | localhost:8000 | Volarix 4 API URL |
 | RiskPercent | 1.0 | Risk per trade (%) |
 | MaxPositions | 1 | Max concurrent positions |
