@@ -48,6 +48,28 @@ python scripts/start.py
 
 The API will start on `http://localhost:8000`
 
+### 4. MT5 Integration (Optional - For Automated Trading)
+
+To connect MT5 to the API for automated trading:
+
+1. **Compile the C++ DLL Bridge:**
+   - Open `mt5_integration/volarix4_bridge.cpp` in Visual Studio
+   - Build as `Volarix4Bridge.dll` (x64, Release)
+   - Copy to `[MT5 Data Folder]\MQL5\Libraries\`
+
+2. **Deploy the Expert Advisor:**
+   - Copy `mt5_integration/volarix4.mq5` to `[MT5 Data Folder]\MQL5\Experts\`
+   - In MT5: Tools → Options → Expert Advisors → Enable "Allow DLL imports"
+
+3. **Run the EA:**
+   - Attach volarix4 EA to a chart
+   - Configure parameters (Symbol, Timeframe, Risk%)
+   - Enable AutoTrading
+
+**See [mt5_integration/README_MT5.md](../mt5_integration/README_MT5.md) for detailed setup instructions.**
+
+**⚠️ CRITICAL FIX (Dec 2025)**: The DLL bridge requires `#pragma pack(1)` and `long long timestamp` to avoid struct alignment issues. The current code includes these fixes - do not modify the struct definition without testing!
+
 ## API Endpoints
 
 ### POST /signal
@@ -278,11 +300,35 @@ Tracks:
 - Verify credentials in `.env` are correct
 - Check that your MT5 account allows API access
 
+### MT5 DLL Integration Issues
+
+**Wrong dates (1970, 1963, 2003) or corrupted data:**
+- Struct alignment mismatch - ensure `#pragma pack(1)` in C++
+- Rebuild DLL after any struct changes
+- Restart MT5 to unload old DLL from memory
+
+**No TP/SL set on trades:**
+- Ensure MQ5 is parsing `entry`, `sl`, and `tp2` from API response
+- Check `request.tp = tp2;` is set (line 351 in volarix4.mq5)
+- Verify API is returning non-zero TP values
+
+**DLL not loading:**
+- Check DLL is in `[MT5 Data Folder]\MQL5\Libraries\Volarix4Bridge.dll`
+- Enable "Allow DLL imports" in MT5 Options
+- Compile for x64 architecture (not x86)
+- Check debug log: `E:\Volarix4Bridge_Debug.txt`
+
+**Non-deterministic trades (different results each run):**
+- Memory corruption from struct mismatch
+- Verify `OHLCVBar` struct size = 44 bytes exactly
+- Ensure `long long timestamp` (not `long`)
+
 ### No Signals Generated
 - Strategy is selective - HOLD signals are normal
 - Verify you're testing during London/NY sessions
 - Try different symbols or timeframes
 - Check logs for detailed rejection reasons
+- "No rejection pattern" means no valid S/R bounce found
 
 ### Import Errors
 - Run `pip install -r requirements.txt`
