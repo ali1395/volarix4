@@ -38,7 +38,12 @@ DEBUG=false
 ### 3. Start the API
 
 ```bash
-python start.py
+python run.py
+```
+
+Or alternatively:
+```bash
+python scripts/start.py
 ```
 
 The API will start on `http://localhost:8000`
@@ -192,22 +197,23 @@ RISK_CONFIG = {
 
 ```
 volarix4/
-├── main.py              # FastAPI application & endpoints
-├── data.py              # MT5 data fetching
-├── sr_levels.py         # S/R level detection
-├── rejection.py         # Rejection pattern recognition
-├── trade_setup.py       # SL/TP calculation
-├── utils.py             # Helper functions
-├── config.py            # Configuration
-├── logger.py            # Logging system
-├── monitor.py           # Performance monitoring
-├── test_api.py          # API test suite
-├── backtest.py          # Development backtest
-├── start.py             # Startup script
-├── requirements.txt     # Dependencies
-├── .env.example         # Environment template
-└── README.md           # This file
+├── volarix4/                # Main package
+│   ├── api/                # API layer (FastAPI)
+│   ├── core/               # Core trading logic
+│   ├── utils/              # Utilities (logger, monitor, helpers)
+│   └── config.py           # Configuration
+├── tests/                   # Test files
+├── scripts/                 # Utility scripts
+├── docs/                    # Documentation
+├── mt5_integration/         # MT5 Expert Advisor
+├── run.py                   # Main entry point
+├── requirements.txt         # Dependencies
+├── .env.example             # Environment template
+├── PROJECT-STRUCTURE.md     # Detailed structure guide
+└── README.md               # This file
 ```
+
+**See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed package organization.**
 
 ## Testing & Validation
 

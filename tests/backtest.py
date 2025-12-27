@@ -8,14 +8,20 @@ This script performs a bar-by-bar walk-forward simulation with
 realistic SL/TP management and no look-ahead bias.
 """
 
+import sys
+import os
+
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Optional
-from data import fetch_ohlc, connect_mt5
-from sr_levels import detect_sr_levels
-from rejection import find_rejection_candle
-from trade_setup import calculate_sl_tp
-from utils import calculate_pip_value
+from volarix4.core.data import fetch_ohlc, connect_mt5
+from volarix4.core.sr_levels import detect_sr_levels
+from volarix4.core.rejection import find_rejection_candle
+from volarix4.core.trade_setup import calculate_sl_tp
+from volarix4.utils.helpers import calculate_pip_value
 
 
 class Trade:
