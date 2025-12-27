@@ -6,6 +6,9 @@
 //  Single-TF only (no multi-TF complexity)
 //=============================================================================
 
+// NOTE: If your project uses precompiled headers, uncomment the next line:
+// #include "pch.h"
+
 #include <windows.h>
 #include <wininet.h>
 #include <string>

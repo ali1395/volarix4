@@ -23,7 +23,7 @@ struct OHLCVBar
 //====================================================================
 //  IMPORT DLL
 //====================================================================
-#import "Volarix4Bridge.dll"
+#import "VolariXBridge.dll"
    // Send OHLCV data to Volarix 4 API and get signal
    string GetVolarix4Signal(
       string symbol,
@@ -221,6 +221,12 @@ void OnTick()
    }
 
    // Call DLL to get signal from API
+   Print("Calling DLL: GetVolarix4Signal()");
+   Print("  Symbol: ", SymbolToCheck);
+   Print("  Timeframe: ", TimeframeToString(Timeframe));
+   Print("  Bars to send: ", copied);
+
+   ResetLastError();
    string response = GetVolarix4Signal(
       SymbolToCheck,
       TimeframeToString(Timeframe),
@@ -228,11 +234,27 @@ void OnTick()
       copied
    );
 
-   if(StringLen(response) == 0)
+   int dll_error = GetLastError();
+   if(dll_error != 0)
    {
-      Print("Empty response from API");
+      PrintFormat("ERROR: DLL call failed with error code %d", dll_error);
+
+      Print("  Make sure:");
+      Print("    1. Volarix4Bridge.dll is in [MT5 Data Folder]\\MQL5\\Libraries\\");
+      Print("    2. 'Allow DLL imports' is enabled in Tools -> Options -> Expert Advisors");
+      Print("    3. The DLL was compiled for x64 architecture");
       return;
    }
+
+   if(StringLen(response) == 0)
+   {
+      Print("WARNING: Empty response from API");
+      Print("  Check debug log at: E:\\Volarix4Bridge_Debug.txt");
+      Print("  Verify Volarix 4 API is running at: ", API_URL);
+      return;
+   }
+
+   Print("DLL Response received (", StringLen(response), " bytes)");
 
    // Parse JSON response (simplified - in production use proper JSON parser)
    // Expected: {"signal":"BUY","confidence":0.75,"entry":1.08520,"sl":1.08390,

@@ -7,6 +7,14 @@ Usage:
     python run.py
 """
 
+import sys
+from pathlib import Path
+
+# Add the project root to Python path
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import uvicorn
 from volarix4.config import API_HOST, API_PORT, DEBUG
 
