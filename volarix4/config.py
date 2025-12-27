@@ -27,19 +27,21 @@ REJECTION_CONFIG = {
     "max_distance_pips": 10.0,   # Max distance from level
     "close_position_buy": 0.60,  # Close must be in top 60% for BUY
     "close_position_sell": 0.40, # Close must be in bottom 40% for SELL
-    "lookback_candles": 5        # Number of recent candles to check
+    "lookback_candles": 5,       # Number of recent candles to check
+    "min_confidence": 0.80       # Minimum confidence to execute signal
 }
 
 # Risk Management
 RISK_CONFIG = {
     "sl_pips_beyond": 10.0,      # SL distance beyond level
+    "max_sl_pips": 20.0,         # Maximum SL in pips (reject trade if exceeded)
+    "min_rr": 2.0,               # Minimum risk:reward ratio (was 1.5, now 2.0)
     "tp1_r": 1.0,                # TP1 at 1R
     "tp2_r": 2.0,                # TP2 at 2R
     "tp3_r": 3.0,                # TP3 at 3R
     "tp1_percent": 0.40,         # 40% at TP1
     "tp2_percent": 0.40,         # 40% at TP2
-    "tp3_percent": 0.20,         # 20% at TP3
-    "min_rr": 1.5                # Min risk:reward ratio
+    "tp3_percent": 0.20          # 20% at TP3
 }
 
 # Session Times (EST hours)

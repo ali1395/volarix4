@@ -98,7 +98,9 @@ def format_signal_response(rejection: Dict, trade_params: Dict,
 
 def calculate_trade_setup(rejection: Dict, sl_pips_beyond: float = 10.0,
                          tp_ratios: list = None, tp_percents: list = None,
-                         pip_value: float = 0.0001) -> Dict:
+                         pip_value: float = 0.0001,
+                         max_sl_pips: float = None,
+                         min_rr: float = None) -> Dict:
     """
     Complete trade setup calculation (main function).
 
@@ -108,9 +110,11 @@ def calculate_trade_setup(rejection: Dict, sl_pips_beyond: float = 10.0,
         tp_ratios: R multiples for TPs
         tp_percents: Position percentages for each TP
         pip_value: Value of 1 pip
+        max_sl_pips: Maximum allowed SL in pips (reject trade if exceeded)
+        min_rr: Minimum risk:reward ratio (reject trade if below)
 
     Returns:
-        Complete trade setup matching API response format
+        Complete trade setup matching API response format, or None if risk parameters exceeded
     """
     if tp_ratios is None:
         tp_ratios = [1.0, 2.0, 3.0]
@@ -126,6 +130,14 @@ def calculate_trade_setup(rejection: Dict, sl_pips_beyond: float = 10.0,
         tp_ratios=tp_ratios,
         pip_value=pip_value
     )
+
+    # Validate SL cap
+    if max_sl_pips is not None and trade_params['sl_pips'] > max_sl_pips:
+        return None  # Trade rejected - SL too large
+
+    # Validate minimum R:R ratio
+    if min_rr is not None and trade_params['risk_reward'] < min_rr:
+        return None  # Trade rejected - R:R too low
 
     # Format response
     response = format_signal_response(

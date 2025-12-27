@@ -15,6 +15,8 @@ from volarix4.core.data import is_valid_session
 from volarix4.core.sr_levels import detect_sr_levels
 from volarix4.core.rejection import find_rejection_candle
 from volarix4.core.trade_setup import calculate_trade_setup
+from volarix4.core.trend_filter import detect_trend, validate_signal_with_trend
+from volarix4.core.sr_validation import SRLevelValidator
 from volarix4.utils.helpers import calculate_pip_value
 from volarix4.config import SR_CONFIG, REJECTION_CONFIG, RISK_CONFIG
 from volarix4.utils.logger import setup_logger, log_signal_details
@@ -22,6 +24,10 @@ from volarix4.utils.monitor import monitor
 
 # Initialize logger
 logger = setup_logger("volarix4", level="INFO")
+
+# Signal cooldown tracking (symbol -> last signal timestamp)
+from datetime import datetime, timedelta
+_signal_cooldown_tracker = {}
 
 
 class OHLCVBar(BaseModel):
@@ -289,7 +295,17 @@ def create_app() -> FastAPI:
                     reason=f"Outside trading session (London/NY only)"
                 )
 
-            # 3. Detect S/R levels
+            # 3. Trend Filter (EMA 20/50)
+            trend_info = detect_trend(df, ema_fast=20, ema_slow=50)
+            log_signal_details(logger, "TREND_FILTER", {
+                'trend': trend_info['trend'],
+                'strength': trend_info['strength'],
+                'allow_buy': trend_info['allow_buy'],
+                'allow_sell': trend_info['allow_sell'],
+                'reason': trend_info['reason']
+            })
+
+            # 4. Detect S/R levels
             pip_value = calculate_pip_value(request.symbol)
             levels = detect_sr_levels(
                 df,
@@ -317,7 +333,35 @@ def create_app() -> FastAPI:
                     reason="No significant S/R levels detected"
                 )
 
-            # 4. Find rejection candles
+            # 5. Validate S/R levels (filter broken levels)
+            sr_validator = SRLevelValidator(pip_value=pip_value)
+            levels_before = len(levels)
+            levels = sr_validator.validate_levels(levels, df)
+            levels_after = len(levels)
+
+            log_signal_details(logger, "SR_VALIDATION", {
+                'levels_before': levels_before,
+                'levels_after': levels_after,
+                'broken_levels': sr_validator.get_broken_levels_info()
+            })
+
+            if not levels:
+                logger.info("All S/R levels invalidated (broken recently)")
+                return SignalResponse(
+                    signal="HOLD",
+                    confidence=0.0,
+                    entry=0.0,
+                    sl=0.0,
+                    tp1=0.0,
+                    tp2=0.0,
+                    tp3=0.0,
+                    tp1_percent=RISK_CONFIG["tp1_percent"],
+                    tp2_percent=RISK_CONFIG["tp2_percent"],
+                    tp3_percent=RISK_CONFIG["tp3_percent"],
+                    reason="All S/R levels broken or in cooldown period"
+                )
+
+            # 6. Find rejection candles
             rejection = find_rejection_candle(
                 df,
                 levels,
@@ -349,14 +393,124 @@ def create_app() -> FastAPI:
                 'confidence': rejection['confidence']
             })
 
-            # 5. Calculate trade setup
+            # 6.5. Check minimum confidence threshold
+            min_confidence = REJECTION_CONFIG["min_confidence"]
+            if rejection['confidence'] < min_confidence:
+                log_signal_details(logger, "CONFIDENCE_CHECK", {
+                    'confidence': rejection['confidence'],
+                    'min_required': min_confidence,
+                    'passed': False
+                })
+
+                return SignalResponse(
+                    signal="HOLD",
+                    confidence=rejection['confidence'],
+                    entry=0.0,
+                    sl=0.0,
+                    tp1=0.0,
+                    tp2=0.0,
+                    tp3=0.0,
+                    tp1_percent=RISK_CONFIG["tp1_percent"],
+                    tp2_percent=RISK_CONFIG["tp2_percent"],
+                    tp3_percent=RISK_CONFIG["tp3_percent"],
+                    reason=f"Confidence too low ({rejection['confidence']:.2f} < {min_confidence})"
+                )
+
+            log_signal_details(logger, "CONFIDENCE_CHECK", {
+                'confidence': rejection['confidence'],
+                'min_required': min_confidence,
+                'passed': True
+            })
+
+            # 7. Validate signal aligns with trend
+            trend_validation = validate_signal_with_trend(rejection['direction'], trend_info)
+            log_signal_details(logger, "TREND_VALIDATION", {
+                'signal_direction': rejection['direction'],
+                'valid': trend_validation['valid'],
+                'reason': trend_validation['reason']
+            })
+
+            if not trend_validation['valid']:
+                return SignalResponse(
+                    signal="HOLD",
+                    confidence=0.0,
+                    entry=0.0,
+                    sl=0.0,
+                    tp1=0.0,
+                    tp2=0.0,
+                    tp3=0.0,
+                    tp1_percent=RISK_CONFIG["tp1_percent"],
+                    tp2_percent=RISK_CONFIG["tp2_percent"],
+                    tp3_percent=RISK_CONFIG["tp3_percent"],
+                    reason=trend_validation['reason']
+                )
+
+            # 7.5. Check signal cooldown (4 hours minimum between signals)
+            cooldown_hours = 4
+            current_time = datetime.now()
+
+            if request.symbol in _signal_cooldown_tracker:
+                last_signal_time = _signal_cooldown_tracker[request.symbol]
+                time_since_last_signal = current_time - last_signal_time
+
+                if time_since_last_signal < timedelta(hours=cooldown_hours):
+                    hours_remaining = cooldown_hours - (time_since_last_signal.total_seconds() / 3600)
+                    log_signal_details(logger, "COOLDOWN_CHECK", {
+                        'in_cooldown': True,
+                        'last_signal': last_signal_time.isoformat(),
+                        'hours_remaining': round(hours_remaining, 1)
+                    })
+
+                    return SignalResponse(
+                        signal="HOLD",
+                        confidence=0.0,
+                        entry=0.0,
+                        sl=0.0,
+                        tp1=0.0,
+                        tp2=0.0,
+                        tp3=0.0,
+                        tp1_percent=RISK_CONFIG["tp1_percent"],
+                        tp2_percent=RISK_CONFIG["tp2_percent"],
+                        tp3_percent=RISK_CONFIG["tp3_percent"],
+                        reason=f"Signal cooldown active ({hours_remaining:.1f}h remaining)"
+                    )
+
+            log_signal_details(logger, "COOLDOWN_CHECK", {'in_cooldown': False})
+
+            # 8. Calculate trade setup with risk validation
             trade_setup = calculate_trade_setup(
                 rejection,
                 sl_pips_beyond=RISK_CONFIG["sl_pips_beyond"],
                 tp_ratios=[RISK_CONFIG["tp1_r"], RISK_CONFIG["tp2_r"], RISK_CONFIG["tp3_r"]],
                 tp_percents=[RISK_CONFIG["tp1_percent"], RISK_CONFIG["tp2_percent"], RISK_CONFIG["tp3_percent"]],
-                pip_value=pip_value
+                pip_value=pip_value,
+                max_sl_pips=RISK_CONFIG["max_sl_pips"],
+                min_rr=RISK_CONFIG["min_rr"]
             )
+
+            # Check if trade was rejected due to risk parameters
+            if trade_setup is None:
+                # Calculate SL pips to provide in reason
+                sl_distance = abs(rejection['entry'] - (
+                    rejection['level'] - (RISK_CONFIG["sl_pips_beyond"] * pip_value)
+                    if rejection['direction'] == 'BUY'
+                    else rejection['level'] + (RISK_CONFIG["sl_pips_beyond"] * pip_value)
+                ))
+                sl_pips = sl_distance / pip_value
+
+                return SignalResponse(
+                    signal="HOLD",
+                    confidence=0.0,
+                    entry=0.0,
+                    sl=0.0,
+                    tp1=0.0,
+                    tp2=0.0,
+                    tp3=0.0,
+                    tp1_percent=RISK_CONFIG["tp1_percent"],
+                    tp2_percent=RISK_CONFIG["tp2_percent"],
+                    tp3_percent=RISK_CONFIG["tp3_percent"],
+                    reason=f"Risk parameters exceeded (SL: {sl_pips:.1f} pips, max: {RISK_CONFIG['max_sl_pips']}, min R:R: {RISK_CONFIG['min_rr']})"
+                )
 
             log_signal_details(logger, "TRADE_SETUP", {
                 'direction': trade_setup['signal'],
@@ -374,6 +528,11 @@ def create_app() -> FastAPI:
                 'reason': trade_setup['reason']
             })
 
+            # Update signal cooldown tracker (only for BUY/SELL signals)
+            if trade_setup['signal'] in ['BUY', 'SELL']:
+                _signal_cooldown_tracker[request.symbol] = current_time
+                logger.info(f"Signal cooldown activated for {request.symbol} - next signal allowed after {cooldown_hours}h")
+
             # Record performance metrics
             duration = time.time() - start_time
             monitor.record_request(
@@ -384,7 +543,7 @@ def create_app() -> FastAPI:
                 confidence=trade_setup['confidence']
             )
 
-            # 6. Return response
+            # 9. Return response
             return SignalResponse(**trade_setup)
 
         except Exception as e:
