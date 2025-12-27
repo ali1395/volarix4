@@ -23,7 +23,7 @@ struct OHLCVBar
 //====================================================================
 //  IMPORT DLL
 //====================================================================
-#import "VolariXBridge.dll"
+#import "Volarix4Bridge.dll"
    // Send OHLCV data to Volarix 4 API and get signal
    string GetVolarix4Signal(
       string symbol,

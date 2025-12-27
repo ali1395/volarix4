@@ -79,7 +79,7 @@ def log_signal_details(logger: logging.Logger, step: str, data: Dict[str, Any]):
         data: Step-specific data dictionary
     """
     if step == "REQUEST":
-        logger.info(f"━━━ NEW REQUEST ━━━")
+        logger.info(f"=== NEW REQUEST ===")
         logger.info(f"Symbol: {data.get('symbol')}, Timeframe: {data.get('timeframe')}, Bars: {data.get('bars')}")
 
     elif step == "DATA_FETCH":
@@ -131,12 +131,12 @@ def log_signal_details(logger: logging.Logger, step: str, data: Dict[str, Any]):
         else:
             logger.info(f"Final Signal: {signal} (Confidence: {confidence:.2f})")
             logger.info(f"Reason: {reason}")
-        logger.info(f"━━━ REQUEST COMPLETE ━━━\n")
+        logger.info(f"=== REQUEST COMPLETE ===\n")
 
     elif step == "ERROR":
         error_msg = data.get('error', 'Unknown error')
         logger.error(f"Error during signal generation: {error_msg}", exc_info=data.get('exc_info'))
-        logger.info(f"━━━ REQUEST FAILED ━━━\n")
+        logger.info(f"=== REQUEST FAILED ===\n")
 
 
 # Test code

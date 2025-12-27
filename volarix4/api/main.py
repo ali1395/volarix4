@@ -228,6 +228,12 @@ def create_app() -> FastAPI:
             )
 
             # 1. Convert OHLCV data to DataFrame
+            # Debug: Log first bar to check for data corruption
+            if len(request.data) > 0:
+                first_bar = request.data[0]
+                logger.debug(f"First bar received: time={first_bar.time}, open={first_bar.open}, "
+                           f"high={first_bar.high}, low={first_bar.low}, close={first_bar.close}")
+
             df = pd.DataFrame([{
                 'time': pd.to_datetime(bar.time, unit='s'),
                 'open': bar.open,
@@ -236,6 +242,10 @@ def create_app() -> FastAPI:
                 'close': bar.close,
                 'volume': bar.volume
             } for bar in request.data])
+
+            # Debug: Log DataFrame head
+            logger.debug(f"DataFrame head:\n{df.head().to_string()}")
+            logger.debug(f"DataFrame dtypes:\n{df.dtypes}")
 
             log_signal_details(logger, "DATA_FETCH", {
                 'bars_count': len(df),
