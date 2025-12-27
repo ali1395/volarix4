@@ -28,7 +28,7 @@ REJECTION_CONFIG = {
     "close_position_buy": 0.60,  # Close must be in top 60% for BUY
     "close_position_sell": 0.40, # Close must be in bottom 40% for SELL
     "lookback_candles": 5,       # Number of recent candles to check
-    "min_confidence": 0.80       # Minimum confidence to execute signal
+    "min_confidence": 0.70       # Minimum confidence to execute signal (lowered from 0.80)
 }
 
 # Risk Management

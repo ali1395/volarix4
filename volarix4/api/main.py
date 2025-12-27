@@ -475,22 +475,29 @@ def create_app() -> FastAPI:
                 'passed': True
             })
 
-            # 7. Validate signal aligns with trend
+            # 7. Validate signal aligns with trend (with exception for high confidence counter-trend)
             logger.info("Checking Trend Filter...")
             current_close = df['close'].iloc[-1]
             logger.info(f"EMA Fast (20): {trend_info['ema_fast']:.5f}, EMA Slow (50): {trend_info['ema_slow']:.5f}")
             logger.info(f"Current Close: {current_close:.5f}, Signal Direction: {rejection['direction']}")
             logger.info(f"Trend: {trend_info['trend']}, Strength: {trend_info['strength']:.3f}")
+            logger.info(f"Rejection Confidence: {rejection['confidence']:.3f}, Level Score: {rejection['level_score']:.1f}")
 
             trend_validation = validate_signal_with_trend(rejection['direction'], trend_info)
+
+            # CRITICAL FIX: Allow counter-trend trades when confidence > 0.85 at strong S/R levels
+            high_confidence_override = rejection['confidence'] > 0.85 and rejection['level_score'] >= 80.0
+
             log_signal_details(logger, "TREND_VALIDATION", {
                 'signal_direction': rejection['direction'],
                 'valid': trend_validation['valid'],
+                'high_confidence_override': high_confidence_override,
                 'reason': trend_validation['reason']
             })
 
-            if not trend_validation['valid']:
+            if not trend_validation['valid'] and not high_confidence_override:
                 logger.info(f"Trend Filter: FAILED - {trend_validation['reason']}")
+                logger.info(f"High Confidence Override: NO (confidence={rejection['confidence']:.3f}, level_score={rejection['level_score']:.1f})")
                 logger.info(f"Signal Rejected - Reason: {trend_validation['reason']}")
 
                 return SignalResponse(
@@ -507,26 +514,31 @@ def create_app() -> FastAPI:
                     reason=trend_validation['reason']
                 )
 
-            logger.info(f"Trend Filter: PASSED - Signal aligns with {trend_info['trend']}")
+            if high_confidence_override and not trend_validation['valid']:
+                logger.info(f"Trend Filter: BYPASSED - High confidence counter-trend setup (confidence={rejection['confidence']:.3f} > 0.85, level_score={rejection['level_score']:.1f} >= 80)")
+            else:
+                logger.info(f"Trend Filter: PASSED - Signal aligns with {trend_info['trend']}")
 
             # 7.5. Check signal cooldown (4 hours minimum between signals)
             logger.info("Checking Signal Cooldown...")
             cooldown_hours = 4
-            current_time = datetime.now()
+            # CRITICAL FIX: Use bar timestamp instead of system time for historical data
+            current_bar_time = df['time'].iloc[-1]
 
             if request.symbol in _signal_cooldown_tracker:
                 last_signal_time = _signal_cooldown_tracker[request.symbol]
-                time_since_last_signal = current_time - last_signal_time
+                time_since_last_signal = current_bar_time - last_signal_time
 
                 if time_since_last_signal < timedelta(hours=cooldown_hours):
                     hours_remaining = cooldown_hours - (time_since_last_signal.total_seconds() / 3600)
-                    logger.info(f"Last Signal: {last_signal_time.strftime('%Y-%m-%d %H:%M:%S')}, Hours Since: {time_since_last_signal.total_seconds() / 3600:.1f}h")
+                    logger.info(f"Last Signal: {last_signal_time}, Current Bar: {current_bar_time}, Hours Since: {time_since_last_signal.total_seconds() / 3600:.1f}h")
                     logger.info(f"Cooldown Filter: FAILED - {hours_remaining:.1f}h remaining in cooldown period")
                     logger.info(f"Signal Rejected - Reason: Signal cooldown active")
 
                     log_signal_details(logger, "COOLDOWN_CHECK", {
                         'in_cooldown': True,
-                        'last_signal': last_signal_time.isoformat(),
+                        'last_signal': str(last_signal_time),
+                        'current_bar': str(current_bar_time),
                         'hours_remaining': round(hours_remaining, 1)
                     })
 
@@ -611,20 +623,26 @@ def create_app() -> FastAPI:
 
             # Final decision logging
             logger.info("=" * 70)
-            logger.info("All Filters: PASSED")
-            logger.info(f"Trade Setup: {trade_setup['signal']} at {trade_setup['entry']:.5f}")
-            logger.info(f"  - SL: {trade_setup['sl']:.5f} ({abs(trade_setup['entry'] - trade_setup['sl']) / pip_value:.1f} pips)")
-            logger.info(f"  - TP1: {trade_setup['tp1']:.5f} ({abs(trade_setup['tp1'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp1_percent']*100:.0f}%)")
-            logger.info(f"  - TP2: {trade_setup['tp2']:.5f} ({abs(trade_setup['tp2'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp2_percent']*100:.0f}%)")
-            logger.info(f"  - TP3: {trade_setup['tp3']:.5f} ({abs(trade_setup['tp3'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp3_percent']*100:.0f}%)")
-            logger.info(f"  - Confidence: {trade_setup['confidence']:.3f}")
-            logger.info(f"Final Signal: GENERATED")
+            logger.info("🎯 ALL FILTERS PASSED - TRADE SIGNAL GENERATED 🎯")
+            logger.info("=" * 70)
+            logger.info(f"Signal Direction: {trade_setup['signal']}")
+            logger.info(f"Confidence Score: {trade_setup['confidence']:.3f}")
+            logger.info(f"Entry Price: {trade_setup['entry']:.5f}")
+            logger.info(f"Stop Loss: {trade_setup['sl']:.5f} ({abs(trade_setup['entry'] - trade_setup['sl']) / pip_value:.1f} pips)")
+            logger.info(f"Take Profit 1: {trade_setup['tp1']:.5f} ({abs(trade_setup['tp1'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp1_percent']*100:.0f}%)")
+            logger.info(f"Take Profit 2: {trade_setup['tp2']:.5f} ({abs(trade_setup['tp2'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp2_percent']*100:.0f}%)")
+            logger.info(f"Take Profit 3: {trade_setup['tp3']:.5f} ({abs(trade_setup['tp3'] - trade_setup['entry']) / pip_value:.1f} pips, {trade_setup['tp3_percent']*100:.0f}%)")
+            logger.info(f"Risk:Reward Ratio: 1:{(abs(trade_setup['tp2'] - trade_setup['entry']) / abs(trade_setup['entry'] - trade_setup['sl'])):.2f}")
+            logger.info(f"Reason: {trade_setup['reason']}")
+            logger.info("=" * 70)
+            logger.info("✅ FINAL SIGNAL: {trade_setup['signal']} ✅")
             logger.info("=" * 70)
 
             # Update signal cooldown tracker (only for BUY/SELL signals)
             if trade_setup['signal'] in ['BUY', 'SELL']:
-                _signal_cooldown_tracker[request.symbol] = current_time
-                logger.info(f"Signal cooldown activated for {request.symbol} - next signal allowed after {cooldown_hours}h")
+                # CRITICAL FIX: Use bar timestamp instead of system time
+                _signal_cooldown_tracker[request.symbol] = current_bar_time
+                logger.info(f"Signal cooldown activated for {request.symbol} at {current_bar_time} - next signal allowed after {cooldown_hours}h")
 
             # Record performance metrics
             duration = time.time() - start_time
