@@ -20,15 +20,18 @@
 #pragma comment(lib, "comsuppw.lib")
 
 // OHLCV Bar structure (must match MT5 definition)
+// CRITICAL: MQL5 uses tight packing with NO PADDING (total: 44 bytes)
+#pragma pack(push, 1)  // No padding - tight packing to match MQL5
 struct OHLCVBar
 {
-    long timestamp;      // Unix timestamp
-    double open;
-    double high;
-    double low;
-    double close;
-    int volume;
-};
+    long long timestamp; // Unix timestamp (8 bytes) - use long long to ensure 8 bytes
+    double open;         // 8 bytes
+    double high;         // 8 bytes
+    double low;          // 8 bytes
+    double close;        // 8 bytes
+    int volume;          // 4 bytes
+};                       // Total: exactly 44 bytes (no padding)
+#pragma pack(pop)
 
 //=============================================================================
 //  Helper: Write debug log
@@ -53,6 +56,23 @@ BSTR __stdcall GetVolarix4Signal(
     OHLCVBar* bars,
     int barCount)
 {
+    // Debug: Log struct size to verify packing
+    std::stringstream struct_debug;
+    struct_debug << "=== DLL Called ===" << std::endl;
+    struct_debug << "OHLCVBar struct size: " << sizeof(OHLCVBar) << " bytes (should be 44)" << std::endl;
+    struct_debug << "Bar count: " << barCount << std::endl;
+    if (barCount > 0) {
+        struct_debug << "First bar: timestamp=" << bars[0].timestamp
+                  << ", open=" << bars[0].open
+                  << ", close=" << bars[0].close << std::endl;
+    }
+    if (barCount > 1) {
+        struct_debug << "Second bar: timestamp=" << bars[1].timestamp
+                  << ", open=" << bars[1].open
+                  << ", close=" << bars[1].close << std::endl;
+    }
+    WriteDebugLog(struct_debug.str().c_str());
+
     // Convert wide strings to std::string
     std::wstring ws_symbol(symbol);
     std::string sym(ws_symbol.begin(), ws_symbol.end());

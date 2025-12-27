@@ -228,11 +228,24 @@ def create_app() -> FastAPI:
             )
 
             # 1. Convert OHLCV data to DataFrame
-            # Debug: Log first bar to check for data corruption
+            # DEBUG: Log bars to check for data corruption
             if len(request.data) > 0:
                 first_bar = request.data[0]
-                logger.debug(f"First bar received: time={first_bar.time}, open={first_bar.open}, "
-                           f"high={first_bar.high}, low={first_bar.low}, close={first_bar.close}")
+                last_bar = request.data[-1]
+                logger.info(f"[DEBUG] Total bars received: {len(request.data)}")
+                logger.info(f"[DEBUG] First bar [0]: time={first_bar.time}, open={first_bar.open:.5f}, close={first_bar.close:.5f}")
+
+                # Check how many bars are zeros
+                zero_count = sum(1 for bar in request.data if bar.time == 0)
+                logger.info(f"[DEBUG] Bars with time=0: {zero_count} out of {len(request.data)}")
+
+                # Log a few bars to see the pattern
+                if len(request.data) >= 5:
+                    for i in [0, 1, 2, len(request.data)-2, len(request.data)-1]:
+                        bar = request.data[i]
+                        logger.info(f"[DEBUG] Bar [{i}]: time={bar.time}, open={bar.open:.5f}, close={bar.close:.5f}")
+
+                logger.info(f"[DEBUG] Last bar [{len(request.data)-1}]: time={last_bar.time}, open={last_bar.open:.5f}, close={last_bar.close:.5f}")
 
             df = pd.DataFrame([{
                 'time': pd.to_datetime(bar.time, unit='s'),
@@ -243,9 +256,9 @@ def create_app() -> FastAPI:
                 'volume': bar.volume
             } for bar in request.data])
 
-            # Debug: Log DataFrame head
-            logger.debug(f"DataFrame head:\n{df.head().to_string()}")
-            logger.debug(f"DataFrame dtypes:\n{df.dtypes}")
+            # DEBUG: Log converted timestamps
+            logger.info(f"[DEBUG] First timestamp after conversion: {df['time'].iloc[0]}")
+            logger.info(f"[DEBUG] Last timestamp after conversion: {df['time'].iloc[-1]}")
 
             log_signal_details(logger, "DATA_FETCH", {
                 'bars_count': len(df),
