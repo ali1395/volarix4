@@ -277,7 +277,7 @@ void OnTick()
    else if(StringFind(response, "\"signal\":\"HOLD\"") >= 0)
       signal = "HOLD";
 
-   // Extract confidence (simplified)
+   // Extract numeric values from JSON
    int conf_pos = StringFind(response, "\"confidence\":");
    if(conf_pos >= 0)
    {
@@ -285,7 +285,29 @@ void OnTick()
       confidence = StringToDouble(conf_str);
    }
 
-   PrintFormat("API Response: Signal=%s, Confidence=%.2f", signal, confidence);
+   int entry_pos = StringFind(response, "\"entry\":");
+   if(entry_pos >= 0)
+   {
+      string entry_str = StringSubstr(response, entry_pos + 8, 15);
+      entry = StringToDouble(entry_str);
+   }
+
+   int sl_pos = StringFind(response, "\"sl\":");
+   if(sl_pos >= 0)
+   {
+      string sl_str = StringSubstr(response, sl_pos + 5, 15);
+      sl = StringToDouble(sl_str);
+   }
+
+   int tp2_pos = StringFind(response, "\"tp2\":");
+   if(tp2_pos >= 0)
+   {
+      string tp2_str = StringSubstr(response, tp2_pos + 6, 15);
+      tp2 = StringToDouble(tp2_str);
+   }
+
+   PrintFormat("API Response: Signal=%s, Confidence=%.2f, Entry=%.5f, SL=%.5f, TP=%.5f",
+               signal, confidence, entry, sl, tp2);
 
    // Execute trade if signal is BUY or SELL
    if(EnableTrading && (signal == "BUY" || signal == "SELL"))
@@ -297,15 +319,24 @@ void OnTick()
          return;
       }
 
-      // Parse entry and SL (simplified - use proper JSON parser in production)
-      // For now, use current price and simple SL
+      // Validate API provided values
+      if(entry == 0.0 || sl == 0.0 || tp2 == 0.0)
+      {
+         Print("ERROR: Invalid trade parameters from API (entry/sl/tp cannot be 0)");
+         Print("  Entry: ", entry, ", SL: ", sl, ", TP: ", tp2);
+         return;
+      }
+
+      // Calculate lot size using API's entry and SL
+      double lot = CalculateLotSize(entry, sl);
+
+      // Use current market price for execution (not API's entry)
       double current_price = (signal == "BUY") ?
          SymbolInfoDouble(SymbolToCheck, SYMBOL_ASK) :
          SymbolInfoDouble(SymbolToCheck, SYMBOL_BID);
 
-      // Calculate lot size
-      double sl_price = current_price + (signal == "BUY" ? -0.0013 : 0.0013);
-      double lot = CalculateLotSize(current_price, sl_price);
+      PrintFormat("Opening trade: %s at %.5f, SL=%.5f, TP=%.5f, Lot=%.2f",
+                  signal, current_price, sl, tp2, lot);
 
       // Open trade
       MqlTradeRequest request = {};
@@ -316,21 +347,22 @@ void OnTick()
       request.volume = lot;
       request.type = (signal == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
       request.price = current_price;
-      request.sl = sl_price;
+      request.sl = sl;        // Use API's SL
+      request.tp = tp2;       // Use API's TP2 (main target)
       request.deviation = 10;
       request.magic = 20241225;
       request.comment = "Volarix4 S/R";
 
       if(OrderSend(request, result))
       {
-         PrintFormat("Trade opened: Ticket=%d, Price=%.5f, Lot=%.2f",
-                     result.order, result.price, lot);
+         PrintFormat("Trade opened: Ticket=%d, Price=%.5f, SL=%.5f, TP=%.5f, Lot=%.2f",
+                     result.order, result.price, sl, tp2, lot);
 
          // Log to CSV
-         string log_line = StringFormat("%s,%s,%s,%.2f,%.5f,%.5f,0,0,0,%s,%d,SUCCESS",
+         string log_line = StringFormat("%s,%s,%s,%.2f,%.5f,%.5f,%.5f,0,0,%s,%d,SUCCESS",
                                         TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
                                         SymbolToCheck, signal, confidence,
-                                        result.price, sl_price, reason, result.order);
+                                        result.price, sl, tp2, reason, result.order);
          WriteToLog(log_line);
       }
       else
