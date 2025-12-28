@@ -623,7 +623,7 @@ def create_app() -> FastAPI:
 
             # Final decision logging
             logger.info("=" * 70)
-            logger.info("🎯 ALL FILTERS PASSED - TRADE SIGNAL GENERATED 🎯")
+            logger.info("*** ALL FILTERS PASSED - TRADE SIGNAL GENERATED ***")
             logger.info("=" * 70)
             logger.info(f"Signal Direction: {trade_setup['signal']}")
             logger.info(f"Confidence Score: {trade_setup['confidence']:.3f}")
@@ -635,7 +635,7 @@ def create_app() -> FastAPI:
             logger.info(f"Risk:Reward Ratio: 1:{(abs(trade_setup['tp2'] - trade_setup['entry']) / abs(trade_setup['entry'] - trade_setup['sl'])):.2f}")
             logger.info(f"Reason: {trade_setup['reason']}")
             logger.info("=" * 70)
-            logger.info("✅ FINAL SIGNAL: {trade_setup['signal']} ✅")
+            logger.info(f">>> FINAL SIGNAL: {trade_setup['signal']} <<<")
             logger.info("=" * 70)
 
             # Update signal cooldown tracker (only for BUY/SELL signals)

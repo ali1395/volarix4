@@ -14,7 +14,7 @@ MT5_SERVER = os.getenv("MT5_SERVER", "")
 
 # S/R Level Detection
 SR_CONFIG = {
-    "lookback": 50,              # Bars to look back for swings
+    "lookback": 200,             # Bars to look back for swings (increased from 50 to use more data)
     "swing_window": 5,           # Window for swing detection
     "min_touches": 3,            # Min touches to qualify as S/R
     "cluster_pips": 10.0,        # Pip distance to cluster levels
