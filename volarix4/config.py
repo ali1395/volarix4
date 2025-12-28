@@ -14,35 +14,38 @@ MT5_SERVER = os.getenv("MT5_SERVER", "")
 
 # S/R Level Detection
 SR_CONFIG = {
-    "lookback": 200,             # Bars to look back for swings (increased from 50 to use more data)
-    "swing_window": 5,           # Window for swing detection
-    "min_touches": 3,            # Min touches to qualify as S/R
-    "cluster_pips": 10.0,        # Pip distance to cluster levels
-    "min_level_score": 60.0      # Min score to use level
+    "lookback": 80,              # DECREASE from 200 to 80 ⚠️ CRITICAL
+    "swing_window": 5,           # Keep
+    "min_touches": 3,            # Keep
+    "cluster_pips": 10.0,        # Keep
+    "min_level_score": 60.0      # Keep
 }
+
 
 # Rejection Candle Criteria
 REJECTION_CONFIG = {
-    "min_wick_body_ratio": 1.5,  # Min wick/body ratio
-    "max_distance_pips": 10.0,   # Max distance from level
-    "close_position_buy": 0.60,  # Close must be in top 60% for BUY
-    "close_position_sell": 0.40, # Close must be in bottom 40% for SELL
-    "lookback_candles": 5,       # Number of recent candles to check
-    "min_confidence": 0.70       # Minimum confidence to execute signal (lowered from 0.80)
+    "min_wick_body_ratio": 1.5,  # Keep
+    "max_distance_pips": 10.0,   # Keep
+    "close_position_buy": 0.60,  # Keep
+    "close_position_sell": 0.40, # Keep
+    "lookback_candles": 5,       # Keep
+    "min_confidence": 0.65       # DECREASE from 0.70 to 0.65 ⚠️ CRITICAL
 }
+
 
 # Risk Management
 RISK_CONFIG = {
-    "sl_pips_beyond": 10.0,      # SL distance beyond level
-    "max_sl_pips": 20.0,         # Maximum SL in pips (reject trade if exceeded)
-    "min_rr": 2.0,               # Minimum risk:reward ratio (was 1.5, now 2.0)
-    "tp1_r": 1.0,                # TP1 at 1R
-    "tp2_r": 2.0,                # TP2 at 2R
-    "tp3_r": 3.0,                # TP3 at 3R
-    "tp1_percent": 0.40,         # 40% at TP1
-    "tp2_percent": 0.40,         # 40% at TP2
-    "tp3_percent": 0.20          # 20% at TP3
+    "sl_pips_beyond": 10.0,      # Keep this
+    "max_sl_pips": 25.0,         # Increase from 20 to 25 (more flexibility)
+    "min_rr": 1.5,               # DECREASE from 2.0 to 1.5 ⚠️ CRITICAL
+    "tp1_r": 1.0,                # Keep
+    "tp2_r": 2.0,                # Keep
+    "tp3_r": 3.0,                # Keep
+    "tp1_percent": 0.50,         # Change from 0.40 to 0.50 (take more profit early)
+    "tp2_percent": 0.30,         # Change from 0.40 to 0.30
+    "tp3_percent": 0.20          # Keep at 0.20
 }
+
 
 # Session Times (EST hours)
 SESSIONS: Dict[str, Tuple[int, int]] = {

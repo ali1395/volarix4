@@ -1,22 +1,25 @@
 """
-Realistic backtest for Volarix 4 (Development Only)
+Realistic backtest for Volarix 4 with cost modeling and parameter sweep.
 
-NOTE: This is for development validation. Final backtesting
-should be done using MT5 Expert Advisor for accurate results.
+This script performs bar-by-bar walk-forward simulation with:
+- Realistic costs (spread, commission, slippage)
+- Parameter testing (min_confidence, broken_level_cooldown)
+- Grid search for parameter optimization
+- No look-ahead bias
 
-This script performs a bar-by-bar walk-forward simulation with
-realistic SL/TP management and no look-ahead bias.
+NOTE: Final backtesting should be done using MT5 Expert Advisor.
 """
 
 import sys
 import os
 
-# Add parent directory to path to allow imports
+# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
+from itertools import product
 from volarix4.core.data import fetch_ohlc, connect_mt5
 from volarix4.core.sr_levels import detect_sr_levels
 from volarix4.core.rejection import find_rejection_candle
@@ -25,12 +28,13 @@ from volarix4.utils.helpers import calculate_pip_value
 
 
 class Trade:
-    """Represents a single trade with realistic SL/TP management."""
+    """Represents a single trade with realistic SL/TP management and costs."""
 
-    def __init__(self, entry_time, direction, entry, sl, tp1, tp2, tp3):
+    def __init__(self, entry_time, direction, entry, sl, tp1, tp2, tp3,
+                 spread_pips=0.0, slippage_pips=0.0, commission_per_lot=0.0, lot_size=1.0):
         self.entry_time = entry_time
         self.direction = direction
-        self.entry = entry
+        self.entry_raw = entry
         self.sl = sl
         self.tp1 = tp1
         self.tp2 = tp2
@@ -40,67 +44,135 @@ class Trade:
         self.exit_price = None
         self.pnl = 0.0
         self.pnl_pips = 0.0
+        self.pnl_after_costs = 0.0
         self.exit_reason = ""
+
+        # Cost parameters
+        self.spread_pips = spread_pips
+        self.slippage_pips = slippage_pips
+        self.commission_per_lot = commission_per_lot
+        self.lot_size = lot_size
+
+        # Apply entry costs
+        pip_value = 0.0001  # Default for EURUSD
+        if direction == "BUY":
+            # Entry: pay spread + slippage
+            self.entry = entry + (spread_pips / 2 + slippage_pips) * pip_value
+        else:  # SELL
+            # Entry: pay spread + slippage
+            self.entry = entry - (spread_pips / 2 + slippage_pips) * pip_value
+
+        # Entry commission
+        self.entry_commission = commission_per_lot * lot_size
+
+
+def apply_exit_costs(trade: Trade, exit_price: float, pip_value: float) -> float:
+    """Apply exit costs (spread, slippage) to exit price."""
+    if trade.direction == "BUY":
+        # Exit BUY: sell at bid (lose spread + slippage)
+        return exit_price - (trade.spread_pips / 2 + trade.slippage_pips) * pip_value
+    else:  # SELL
+        # Exit SELL: buy at ask (pay spread + slippage)
+        return exit_price + (trade.spread_pips / 2 + trade.slippage_pips) * pip_value
 
 
 def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
     """
     Check if trade hits SL or TP on current bar.
-    Realistic: Checks high/low to see if SL/TP was hit during the bar.
+    Applies realistic costs on exit.
 
     Returns:
         True if trade is closed
     """
     if trade.direction == "BUY":
-        # Check SL hit (realistic: check if low touched SL)
+        # Check SL hit
         if bar['low'] <= trade.sl:
             trade.status = "loss"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.sl
-            trade.pnl_pips = -(trade.entry - trade.sl) / pip_value
-            trade.pnl = -1.0  # Full loss
+            exit_price_after_costs = apply_exit_costs(trade, trade.sl, pip_value)
+            trade.exit_price = exit_price_after_costs
+            trade.pnl_pips = (exit_price_after_costs - trade.entry) / pip_value
+            trade.pnl = trade.pnl_pips / ((trade.entry - trade.sl) / pip_value)  # In R
+
+            # Subtract commission
+            exit_commission = trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
             trade.exit_reason = "SL hit"
             return True
 
-        # Check TP levels (realistic: assume partial closes at each TP)
+        # Check TP levels (assume partial closes)
+        r_pips = (trade.entry - trade.sl) / pip_value
+
         if bar['high'] >= trade.tp3:
             # All TPs hit
             trade.status = "win"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.tp3
-            # Weighted profit: 40% at TP1, 40% at TP2, 20% at TP3
-            r_pips = (trade.entry - trade.sl) / pip_value
-            tp1_pips = (trade.tp1 - trade.entry) / pip_value
-            tp2_pips = (trade.tp2 - trade.entry) / pip_value
-            tp3_pips = (trade.tp3 - trade.entry) / pip_value
-            trade.pnl = (0.4 * (tp1_pips / r_pips)) + (0.4 * (tp2_pips / r_pips)) + (
-                        0.2 * (tp3_pips / r_pips))
-            trade.pnl_pips = trade.pnl * r_pips
+
+            # Calculate weighted PnL with costs
+            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
+            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
+            tp3_exit = apply_exit_costs(trade, trade.tp3, pip_value)
+
+            tp1_pips = (tp1_exit - trade.entry) / pip_value
+            tp2_pips = (tp2_exit - trade.entry) / pip_value
+            tp3_pips = (tp3_exit - trade.entry) / pip_value
+
+            weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips + 0.2 * tp3_pips
+            trade.pnl_pips = weighted_pips
+            trade.pnl = weighted_pips / r_pips
+
+            # Commission (3 exits)
+            exit_commission = 3 * trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
+
+            trade.exit_price = tp3_exit
             trade.exit_reason = "All TPs hit"
             return True
 
         elif bar['high'] >= trade.tp2:
-            # TP2 hit (partial exit)
+            # TP2 hit
             trade.status = "win"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.tp2
-            r_pips = (trade.entry - trade.sl) / pip_value
-            tp1_pips = (trade.tp1 - trade.entry) / pip_value
-            tp2_pips = (trade.tp2 - trade.entry) / pip_value
-            trade.pnl = (0.4 * (tp1_pips / r_pips)) + (0.4 * (tp2_pips / r_pips))
-            trade.pnl_pips = trade.pnl * r_pips
+
+            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
+            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
+
+            tp1_pips = (tp1_exit - trade.entry) / pip_value
+            tp2_pips = (tp2_exit - trade.entry) / pip_value
+
+            weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips + 0.2 * 0  # TP3 not hit
+            trade.pnl_pips = weighted_pips
+            trade.pnl = weighted_pips / r_pips
+
+            # Commission (2 exits)
+            exit_commission = 2 * trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
+
+            trade.exit_price = tp2_exit
             trade.exit_reason = "TP2 hit"
             return True
 
         elif bar['high'] >= trade.tp1:
-            # TP1 hit (partial exit)
+            # TP1 hit
             trade.status = "win"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.tp1
-            r_pips = (trade.entry - trade.sl) / pip_value
-            tp1_pips = (trade.tp1 - trade.entry) / pip_value
-            trade.pnl = 0.4 * (tp1_pips / r_pips)
-            trade.pnl_pips = trade.pnl * r_pips
+
+            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
+            tp1_pips = (tp1_exit - trade.entry) / pip_value
+
+            weighted_pips = 0.5 * tp1_pips
+            trade.pnl_pips = weighted_pips
+            trade.pnl = weighted_pips / r_pips
+
+            # Commission (1 exit)
+            exit_commission = trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
+
+            trade.exit_price = tp1_exit
             trade.exit_reason = "TP1 hit"
             return True
 
@@ -109,48 +181,83 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
         if bar['high'] >= trade.sl:
             trade.status = "loss"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.sl
-            trade.pnl_pips = -(trade.sl - trade.entry) / pip_value
-            trade.pnl = -1.0  # Full loss
+            exit_price_after_costs = apply_exit_costs(trade, trade.sl, pip_value)
+            trade.exit_price = exit_price_after_costs
+            trade.pnl_pips = (trade.entry - exit_price_after_costs) / pip_value
+            trade.pnl = trade.pnl_pips / ((trade.sl - trade.entry) / pip_value)
+
+            # Commission
+            exit_commission = trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
             trade.exit_reason = "SL hit"
             return True
 
         # Check TP levels
+        r_pips = (trade.sl - trade.entry) / pip_value
+
         if bar['low'] <= trade.tp3:
-            # All TPs hit
             trade.status = "win"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.tp3
-            r_pips = (trade.sl - trade.entry) / pip_value
-            tp1_pips = (trade.entry - trade.tp1) / pip_value
-            tp2_pips = (trade.entry - trade.tp2) / pip_value
-            tp3_pips = (trade.entry - trade.tp3) / pip_value
-            trade.pnl = (0.4 * (tp1_pips / r_pips)) + (0.4 * (tp2_pips / r_pips)) + (
-                        0.2 * (tp3_pips / r_pips))
-            trade.pnl_pips = trade.pnl * r_pips
+
+            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
+            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
+            tp3_exit = apply_exit_costs(trade, trade.tp3, pip_value)
+
+            tp1_pips = (trade.entry - tp1_exit) / pip_value
+            tp2_pips = (trade.entry - tp2_exit) / pip_value
+            tp3_pips = (trade.entry - tp3_exit) / pip_value
+
+            weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips + 0.2 * tp3_pips
+            trade.pnl_pips = weighted_pips
+            trade.pnl = weighted_pips / r_pips
+
+            exit_commission = 3 * trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
+
+            trade.exit_price = tp3_exit
             trade.exit_reason = "All TPs hit"
             return True
 
         elif bar['low'] <= trade.tp2:
             trade.status = "win"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.tp2
-            r_pips = (trade.sl - trade.entry) / pip_value
-            tp1_pips = (trade.entry - trade.tp1) / pip_value
-            tp2_pips = (trade.entry - trade.tp2) / pip_value
-            trade.pnl = (0.4 * (tp1_pips / r_pips)) + (0.4 * (tp2_pips / r_pips))
-            trade.pnl_pips = trade.pnl * r_pips
+
+            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
+            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
+
+            tp1_pips = (trade.entry - tp1_exit) / pip_value
+            tp2_pips = (trade.entry - tp2_exit) / pip_value
+
+            weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips
+            trade.pnl_pips = weighted_pips
+            trade.pnl = weighted_pips / r_pips
+
+            exit_commission = 2 * trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
+
+            trade.exit_price = tp2_exit
             trade.exit_reason = "TP2 hit"
             return True
 
         elif bar['low'] <= trade.tp1:
             trade.status = "win"
             trade.exit_time = bar['time']
-            trade.exit_price = trade.tp1
-            r_pips = (trade.sl - trade.entry) / pip_value
-            tp1_pips = (trade.entry - trade.tp1) / pip_value
-            trade.pnl = 0.4 * (tp1_pips / r_pips)
-            trade.pnl_pips = trade.pnl * r_pips
+
+            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
+            tp1_pips = (trade.entry - tp1_exit) / pip_value
+
+            weighted_pips = 0.5 * tp1_pips
+            trade.pnl_pips = weighted_pips
+            trade.pnl = weighted_pips / r_pips
+
+            exit_commission = trade.commission_per_lot * trade.lot_size
+            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
+
+            trade.exit_price = tp1_exit
             trade.exit_reason = "TP1 hit"
             return True
 
@@ -161,79 +268,120 @@ def run_backtest(
         symbol: str = "EURUSD",
         timeframe: str = "H1",
         bars: int = 1000,
-        lookback_bars: int = 400
-):
+        lookback_bars: int = 400,
+        # Cost parameters
+        spread_pips: float = 1.0,
+        commission_per_lot: float = 7.0,
+        slippage_pips: float = 0.5,
+        lot_size: float = 1.0,
+        # Filter parameters
+        min_confidence: Optional[float] = None,
+        broken_level_cooldown_hours: Optional[float] = None,
+        enable_confidence_filter: bool = True,
+        enable_broken_level_filter: bool = True,
+        # Display
+        verbose: bool = True
+) -> Dict:
     """
-    Run realistic bar-by-bar backtest.
-
-    This simulates the API being called on each bar with proper
-    SL/TP management and no look-ahead bias.
+    Run realistic bar-by-bar backtest with costs and parameter filters.
 
     Args:
         symbol: Trading pair
         timeframe: Timeframe
         bars: Number of historical bars to test
         lookback_bars: Bars needed for indicator calculation
+        spread_pips: Spread in pips
+        commission_per_lot: Commission per lot (round trip)
+        slippage_pips: Slippage in pips
+        lot_size: Lot size for position sizing
+        min_confidence: Minimum confidence threshold (None = no filter)
+        broken_level_cooldown_hours: Hours to block broken levels (None = no filter)
+        enable_confidence_filter: Enable confidence filtering
+        enable_broken_level_filter: Enable broken level filtering
+        verbose: Print detailed output
+
+    Returns:
+        Dict with backtest results
     """
 
-    print("\n" + "=" * 70)
-    print("VOLARIX 4 BACKTEST - Development Validation")
-    print("=" * 70)
-    print(f"\nSymbol: {symbol}")
-    print(f"Timeframe: {timeframe}")
-    print(f"Test Bars: {bars}")
-    print(f"Lookback: {lookback_bars}")
-    print("\n⚠ NOTE: This is for development only.")
-    print("  Final backtesting should use MT5 Expert Advisor.\n")
-    print("=" * 70)
+    if verbose:
+        print("\n" + "=" * 70)
+        print("VOLARIX 4 BACKTEST - Parameter Sweep Edition")
+        print("=" * 70)
+        print(f"\nSymbol: {symbol}")
+        print(f"Timeframe: {timeframe}")
+        print(f"Test Bars: {bars}")
+        print(f"Lookback: {lookback_bars}")
+        print(f"\nCosts:")
+        print(f"  Spread: {spread_pips} pips")
+        print(f"  Commission: ${commission_per_lot} per lot")
+        print(f"  Slippage: {slippage_pips} pips")
+        print(f"  Lot Size: {lot_size}")
+        print(f"\nFilters:")
+        print(f"  Min Confidence: {min_confidence if enable_confidence_filter else 'OFF'}")
+        print(f"  Broken Level Cooldown: {broken_level_cooldown_hours}h" if enable_broken_level_filter else "  Broken Level Filter: OFF")
+        print("=" * 70)
 
     # Connect to MT5
-    print("\nConnecting to MT5...")
+    if verbose:
+        print("\nConnecting to MT5...")
     if not connect_mt5():
-        print("✗ Failed to connect to MT5")
-        print("  Make sure MT5 is running and credentials are configured")
-        return
+        if verbose:
+            print("✗ Failed to connect to MT5")
+        return {"error": "MT5 connection failed"}
 
-    print("✓ Connected to MT5")
+    if verbose:
+        print("✓ Connected to MT5")
 
     # Fetch historical data
-    print(f"\nFetching {bars + lookback_bars} bars of historical data...")
+    if verbose:
+        print(f"\nFetching {bars + lookback_bars} bars...")
     try:
         df = fetch_ohlc(symbol, timeframe, bars + lookback_bars)
     except Exception as e:
-        print(f"✗ Failed to fetch data: {e}")
-        return
+        if verbose:
+            print(f"✗ Failed to fetch data: {e}")
+        return {"error": f"Data fetch failed: {e}"}
 
     if df is None or len(df) < lookback_bars:
-        print("✗ Insufficient data fetched")
-        return
+        if verbose:
+            print("✗ Insufficient data")
+        return {"error": "Insufficient data"}
 
-    print(f"✓ Fetched {len(df)} bars")
-    print(f"  Date Range: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
+    if verbose:
+        print(f"✓ Fetched {len(df)} bars")
+        print(f"  Range: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
 
     # Backtest variables
     trades: List[Trade] = []
     open_trade: Optional[Trade] = None
     signals_generated = {"BUY": 0, "SELL": 0, "HOLD": 0}
+    filter_rejections = {
+        "confidence": 0,
+        "broken_level": 0
+    }
 
     pip_value = calculate_pip_value(symbol)
 
+    # Broken level tracking: {level_price: (break_timestamp, level_type)}
+    broken_levels: Dict[float, Tuple[datetime, str]] = {}
+
     # Walk forward bar by bar
-    print(f"\nRunning bar-by-bar simulation...")
-    print("  (This may take a minute...)\n")
+    if verbose:
+        print(f"\nRunning simulation...")
 
     for i in range(lookback_bars, len(df)):
         current_bar = df.iloc[i]
+        current_time = current_bar['time']
 
-        # Update open trade if exists
+        # Update open trade
         if open_trade:
             if check_trade_outcome(open_trade, current_bar, pip_value):
                 trades.append(open_trade)
                 open_trade = None
 
-        # Generate signal only if no open trade (one trade at a time)
+        # Generate signal only if no open trade
         if not open_trade:
-            # Get historical data up to current bar (no look-ahead bias)
             historical_data = df.iloc[:i + 1].copy()
 
             # Run S/R detection
@@ -244,40 +392,92 @@ def run_backtest(
             )
 
             if levels:
-                # Search for rejection
-                rejection = find_rejection_candle(
-                    historical_data.tail(20),
-                    levels,
-                    lookback=5,
-                    pip_value=pip_value
-                )
+                # Apply broken level filter
+                if enable_broken_level_filter and broken_level_cooldown_hours:
+                    valid_levels = []
+                    for level_dict in levels:
+                        level_price = round(level_dict['level'], 5)
 
-                if rejection:
-                    direction = rejection['direction']
-                    signals_generated[direction] += 1
+                        # Check if level is in cooldown
+                        if level_price in broken_levels:
+                            break_time, _ = broken_levels[level_price]
+                            time_since_break = current_time - break_time
 
-                    # Calculate trade setup
-                    trade_params = calculate_sl_tp(
-                        entry=rejection['entry'],
-                        level=rejection['level'],
-                        direction=direction,
-                        sl_pips_beyond=10.0,
+                            if time_since_break < timedelta(hours=broken_level_cooldown_hours):
+                                # Still in cooldown
+                                continue
+                            else:
+                                # Cooldown expired, remove
+                                del broken_levels[level_price]
+
+                        valid_levels.append(level_dict)
+
+                    if len(valid_levels) < len(levels):
+                        filter_rejections["broken_level"] += (len(levels) - len(valid_levels))
+
+                    levels = valid_levels
+
+                if levels:
+                    # Search for rejection
+                    rejection = find_rejection_candle(
+                        historical_data.tail(20),
+                        levels,
+                        lookback=5,
                         pip_value=pip_value
                     )
 
-                    # Create trade (enters on next bar open - realistic)
-                    next_bar_idx = i + 1
-                    if next_bar_idx < len(df):
-                        entry_bar = df.iloc[next_bar_idx]
-                        open_trade = Trade(
-                            entry_time=entry_bar['time'],
+                    if rejection:
+                        # Apply confidence filter
+                        confidence = rejection.get('confidence', 1.0)
+
+                        if enable_confidence_filter and min_confidence is not None:
+                            if confidence < min_confidence:
+                                filter_rejections["confidence"] += 1
+                                signals_generated["HOLD"] += 1
+                                continue
+
+                        direction = rejection['direction']
+                        signals_generated[direction] += 1
+
+                        # Calculate trade setup
+                        trade_params = calculate_sl_tp(
+                            entry=rejection['entry'],
+                            level=rejection['level'],
                             direction=direction,
-                            entry=entry_bar['open'],  # Enter at next bar open
-                            sl=trade_params['sl'],
-                            tp1=trade_params['tp1'],
-                            tp2=trade_params['tp2'],
-                            tp3=trade_params['tp3']
+                            sl_pips_beyond=10.0,
+                            pip_value=pip_value
                         )
+
+                        # Mark level as broken if price closed through it
+                        if enable_broken_level_filter:
+                            level_price = round(rejection['level'], 5)
+                            level_type = 'support' if direction == 'BUY' else 'resistance'
+
+                            # Check if level was broken
+                            if level_type == 'support' and current_bar['close'] < (rejection['level'] - 15 * pip_value):
+                                broken_levels[level_price] = (current_time, level_type)
+                            elif level_type == 'resistance' and current_bar['close'] > (rejection['level'] + 15 * pip_value):
+                                broken_levels[level_price] = (current_time, level_type)
+
+                        # Create trade (enter on next bar open)
+                        next_bar_idx = i + 1
+                        if next_bar_idx < len(df):
+                            entry_bar = df.iloc[next_bar_idx]
+                            open_trade = Trade(
+                                entry_time=entry_bar['time'],
+                                direction=direction,
+                                entry=entry_bar['open'],
+                                sl=trade_params['sl'],
+                                tp1=trade_params['tp1'],
+                                tp2=trade_params['tp2'],
+                                tp3=trade_params['tp3'],
+                                spread_pips=spread_pips,
+                                slippage_pips=slippage_pips,
+                                commission_per_lot=commission_per_lot,
+                                lot_size=lot_size
+                            )
+                    else:
+                        signals_generated["HOLD"] += 1
                 else:
                     signals_generated["HOLD"] += 1
             else:
@@ -289,79 +489,217 @@ def run_backtest(
         trades.append(open_trade)
 
     # Calculate statistics
-    print("=" * 70)
-    print("BACKTEST RESULTS")
-    print("=" * 70)
+    completed_trades = [t for t in trades if t.status != "open_at_end"]
+    total_trades = len(completed_trades)
 
-    total_trades = len([t for t in trades if t.status != "open_at_end"])
-    winning_trades = len([t for t in trades if t.status == "win"])
-    losing_trades = len([t for t in trades if t.status == "loss"])
+    if total_trades == 0:
+        return {
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "total_pnl_pips": 0.0,
+            "total_pnl_after_costs": 0.0,
+            "max_drawdown": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "trades": [],
+            "filters": filter_rejections
+        }
 
-    if total_trades > 0:
-        win_rate = (winning_trades / total_trades) * 100
+    winning_trades = [t for t in completed_trades if t.status == "win"]
+    losing_trades = [t for t in completed_trades if t.status == "loss"]
 
-        total_pnl = sum([t.pnl for t in trades if t.status != "open_at_end"])
-        total_pnl_pips = sum([t.pnl_pips for t in trades if t.status != "open_at_end"])
+    win_rate = (len(winning_trades) / total_trades) * 100
 
-        gross_profit = sum([t.pnl for t in trades if t.status == "win"])
-        gross_loss = abs(sum([t.pnl for t in trades if t.status == "loss"]))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+    total_pnl_pips = sum([t.pnl_pips for t in completed_trades])
+    total_pnl_after_costs = sum([t.pnl_after_costs for t in completed_trades])
 
-        print(f"\n📊 Trading Statistics")
-        print(f"{'─' * 70}")
+    gross_profit = sum([t.pnl_after_costs for t in winning_trades])
+    gross_loss = abs(sum([t.pnl_after_costs for t in losing_trades]))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+    avg_win = gross_profit / len(winning_trades) if winning_trades else 0.0
+    avg_loss = gross_loss / len(losing_trades) if losing_trades else 0.0
+
+    # Calculate max drawdown
+    equity_curve = []
+    running_pnl = 0.0
+    for trade in completed_trades:
+        running_pnl += trade.pnl_after_costs
+        equity_curve.append(running_pnl)
+
+    max_drawdown = 0.0
+    if equity_curve:
+        peak = equity_curve[0]
+        for value in equity_curve:
+            if value > peak:
+                peak = value
+            drawdown = peak - value
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+
+    results = {
+        "total_trades": total_trades,
+        "winning_trades": len(winning_trades),
+        "losing_trades": len(losing_trades),
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "total_pnl_pips": total_pnl_pips,
+        "total_pnl_after_costs": total_pnl_after_costs,
+        "max_drawdown": max_drawdown,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "trade_frequency": (total_trades / bars) * 100,
+        "signals": signals_generated,
+        "filters": filter_rejections,
+        "trades": completed_trades
+    }
+
+    if verbose:
+        print("=" * 70)
+        print("BACKTEST RESULTS")
+        print("=" * 70)
+        print(f"\nTrading Statistics")
         print(f"  Total Trades: {total_trades}")
-        print(f"  Winning: {winning_trades} ({win_rate:.1f}%)")
-        print(f"  Losing: {losing_trades} ({100 - win_rate:.1f}%)")
-
-        print(f"\n💰 Profitability")
-        print(f"{'─' * 70}")
+        print(f"  Winning: {len(winning_trades)} ({win_rate:.1f}%)")
+        print(f"  Losing: {len(losing_trades)} ({100 - win_rate:.1f}%)")
+        print(f"\nProfitability")
         print(f"  Profit Factor: {profit_factor:.2f}")
-        print(f"  Total P&L: {total_pnl:+.2f}R ({total_pnl_pips:+.1f} pips)")
+        print(f"  Total P&L (before costs): {total_pnl_pips:+.1f} pips")
+        print(f"  Total P&L (after costs): {total_pnl_after_costs:+.1f} pips")
+        print(f"  Cost Impact: {total_pnl_pips - total_pnl_after_costs:.1f} pips")
+        print(f"  Max Drawdown: {max_drawdown:.1f} pips")
+        print(f"  Avg Win: +{avg_win:.1f} pips")
+        print(f"  Avg Loss: -{avg_loss:.1f} pips")
+        print(f"\nFilters")
+        print(f"  Confidence Rejections: {filter_rejections['confidence']}")
+        print(f"  Broken Level Rejections: {filter_rejections['broken_level']}")
+        print("=" * 70 + "\n")
 
-        if winning_trades > 0:
-            avg_win = gross_profit / winning_trades
-            print(f"  Avg Win: +{avg_win:.2f}R")
+    return results
 
-        if losing_trades > 0:
-            avg_loss = gross_loss / losing_trades
-            print(f"  Avg Loss: -{avg_loss:.2f}R")
 
-        print(f"\n📈 Signal Distribution")
-        print(f"{'─' * 70}")
-        total_signals = sum(signals_generated.values())
-        for signal, count in signals_generated.items():
-            pct = (count / total_signals * 100) if total_signals > 0 else 0
-            print(f"  {signal:4s}: {count:4d} ({pct:5.1f}%)")
+def run_grid_search(
+        param_grid: Dict,
+        symbol: str = "EURUSD",
+        timeframe: str = "H1",
+        bars: int = 500,
+        lookback_bars: int = 400,
+        spread_pips: float = 1.0,
+        commission_per_lot: float = 7.0,
+        slippage_pips: float = 0.5
+) -> pd.DataFrame:
+    """
+    Run grid search over parameter combinations.
 
-        trade_frequency = (total_trades / bars) * 100
-        print(f"\n  Trade Frequency: {trade_frequency:.2f}% of bars")
+    Args:
+        param_grid: Dict with parameter names as keys and list of values to test
+        symbol, timeframe, bars, lookback_bars: Backtest settings
+        spread_pips, commission_per_lot, slippage_pips: Cost settings
 
-        # Show recent trades
-        print(f"\n📝 Recent Trades (Last 10)")
-        print(f"{'─' * 70}")
-        for trade in trades[-10:]:
-            if trade.status != "open_at_end":
-                status_symbol = "✓" if trade.status == "win" else "✗"
-                pnl_str = f"{trade.pnl:+.2f}R"
-                pips_str = f"({trade.pnl_pips:+.1f}p)"
-                print(f"  {status_symbol} {trade.entry_time} | {trade.direction:4s} | "
-                      f"{trade.exit_reason:12s} | {pnl_str:8s} {pips_str:10s}")
+    Returns:
+        DataFrame with results sorted by profit factor
+    """
+    print("\n" + "=" * 70)
+    print("GRID SEARCH - Parameter Optimization")
+    print("=" * 70)
+    print(f"\nTesting parameter combinations:")
+    for param, values in param_grid.items():
+        print(f"  {param}: {values}")
 
-    else:
-        print("\n⚠ No trades executed during backtest period")
-        print(f"\nSignal Distribution:")
-        for signal, count in signals_generated.items():
-            print(f"  {signal}: {count}")
-        print("\nPossible reasons:")
-        print("  - No valid S/R levels detected")
-        print("  - No rejection patterns found")
-        print("  - Outside trading sessions")
+    # Generate all combinations
+    param_names = list(param_grid.keys())
+    param_values = list(param_grid.values())
+    combinations = list(product(*param_values))
+
+    total_combinations = len(combinations)
+    print(f"\nTotal combinations: {total_combinations}")
+    print("\nRunning backtests...\n")
+
+    results_list = []
+
+    for idx, combo in enumerate(combinations, 1):
+        params = dict(zip(param_names, combo))
+
+        print(f"[{idx}/{total_combinations}] Testing: {params}")
+
+        # Run backtest
+        result = run_backtest(
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=bars,
+            lookback_bars=lookback_bars,
+            spread_pips=spread_pips,
+            commission_per_lot=commission_per_lot,
+            slippage_pips=slippage_pips,
+            min_confidence=params.get('min_confidence'),
+            broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
+            enable_confidence_filter='min_confidence' in params,
+            enable_broken_level_filter='broken_level_cooldown_hours' in params,
+            verbose=False
+        )
+
+        # Add parameters to results
+        result.update(params)
+        results_list.append(result)
+
+    # Create DataFrame
+    df_results = pd.DataFrame(results_list)
+
+    # Sort by profit factor (descending)
+    df_results = df_results.sort_values('profit_factor', ascending=False)
 
     print("\n" + "=" * 70)
-    print("Backtest Complete")
-    print("=" * 70 + "\n")
+    print("GRID SEARCH COMPLETE")
+    print("=" * 70)
+
+    return df_results
 
 
 if __name__ == "__main__":
-    # Run backtest with default parameters
-    run_backtest(symbol="EURUSD", timeframe="H1", bars=500, lookback_bars=400)
+    print("\n" + "=" * 70)
+    print("VOLARIX 4 BACKTEST SUITE")
+    print("=" * 70)
+
+    # Run baseline backtest
+    print("\n>>> Running Baseline Backtest (with costs)\n")
+    baseline = run_backtest(
+        symbol="EURUSD",
+        timeframe="H1",
+        bars=500,
+        lookback_bars=400,
+        spread_pips=1.5,
+        commission_per_lot=7.0,
+        slippage_pips=0.5,
+        min_confidence=0.65,
+        broken_level_cooldown_hours=24.0,
+        verbose=True
+    )
+
+    # Run grid search
+    print("\n>>> Running Grid Search\n")
+    param_grid = {
+        'min_confidence': [0.60, 0.65, 0.70, 0.75],
+        'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+    }
+
+    results_df = run_grid_search(
+        param_grid=param_grid,
+        symbol="EURUSD",
+        timeframe="H1",
+        bars=500,
+        lookback_bars=400,
+        spread_pips=1.5,
+        commission_per_lot=7.0,
+        slippage_pips=0.5
+    )
+
+    # Display top 10 results
+    print("\nTop 10 Parameter Combinations:")
+    print("=" * 70)
+    display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'total_trades',
+                   'win_rate', 'profit_factor', 'total_pnl_after_costs', 'max_drawdown']
+    print(results_df[display_cols].head(10).to_string(index=False))
+    print("\n" + "=" * 70)
+    print("Backtest Suite Complete")
+    print("=" * 70 + "\n")

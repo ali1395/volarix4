@@ -486,7 +486,7 @@ def create_app() -> FastAPI:
             trend_validation = validate_signal_with_trend(rejection['direction'], trend_info)
 
             # CRITICAL FIX: Allow counter-trend trades when confidence > 0.85 at strong S/R levels
-            high_confidence_override = rejection['confidence'] > 0.85 and rejection['level_score'] >= 80.0
+            high_confidence_override = rejection['confidence'] > 0.75 and rejection['level_score'] >= 80.0
 
             log_signal_details(logger, "TREND_VALIDATION", {
                 'signal_direction': rejection['direction'],
@@ -521,7 +521,7 @@ def create_app() -> FastAPI:
 
             # 7.5. Check signal cooldown (4 hours minimum between signals)
             logger.info("Checking Signal Cooldown...")
-            cooldown_hours = 4
+            cooldown_hours = 2
             # CRITICAL FIX: Use bar timestamp instead of system time for historical data
             current_bar_time = df['time'].iloc[-1]
 
