@@ -312,6 +312,7 @@ def run_backtest(
         slippage_pips: float = 0.5,
         lot_size: float = 1.0,
         usd_per_pip_per_lot: float = 10.0,
+        starting_balance_usd: float = 10000.0,
         # Filter parameters
         min_confidence: Optional[float] = None,
         broken_level_cooldown_hours: Optional[float] = None,
@@ -336,6 +337,7 @@ def run_backtest(
         slippage_pips: Slippage in pips
         lot_size: Lot size for position sizing
         usd_per_pip_per_lot: USD value per pip per lot (for commission conversion)
+        starting_balance_usd: Starting account balance in USD (for drawdown %)
         min_confidence: Minimum confidence threshold (None = no filter)
         broken_level_cooldown_hours: Hours to block broken levels (None = no filter)
         broken_level_break_pips: Pips beyond level to mark as broken
@@ -553,12 +555,32 @@ def run_backtest(
             "winning_trades": 0,
             "losing_trades": 0,
             "win_rate": 0.0,
+            "accuracy": 0.0,
+            "profit_trades_pct": 0.0,
+            "loss_trades_pct": 0.0,
             "profit_factor": 0.0,
+            "recovery_factor": 0.0,
+            "expected_payoff_pips": 0.0,
             "total_pnl_pips": 0.0,
             "total_pnl_after_costs": 0.0,
+            "gross_profit_pips": 0.0,
+            "gross_loss_pips": 0.0,
             "max_drawdown": 0.0,
+            "max_drawdown_pct": 0.0,
+            "largest_win_pips": 0.0,
+            "largest_loss_pips": 0.0,
             "avg_win": 0.0,
             "avg_loss": 0.0,
+            "avg_win_pips": 0.0,
+            "avg_loss_pips": 0.0,
+            "max_consecutive_wins": 0,
+            "max_consecutive_losses": 0,
+            "max_consecutive_wins_pnl": 0.0,
+            "max_consecutive_losses_pnl": 0.0,
+            "trade_count_long": 0,
+            "trade_count_short": 0,
+            "win_rate_long": 0.0,
+            "win_rate_short": 0.0,
             "trade_frequency": 0.0,
             "signals": signals_generated,
             "filters": filter_rejections,
@@ -568,19 +590,76 @@ def run_backtest(
     winning_trades = [t for t in completed_trades if t.status == "win"]
     losing_trades = [t for t in completed_trades if t.status == "loss"]
 
+    # Basic counts and rates
     win_rate = (len(winning_trades) / total_trades) * 100
+    accuracy = win_rate  # Same as win_rate
+    profit_trades_pct = win_rate
+    loss_trades_pct = 100.0 - win_rate
 
+    # P&L metrics
     total_pnl_pips = sum([t.pnl_pips for t in completed_trades])
     total_pnl_after_costs = sum([t.pnl_after_costs for t in completed_trades])
 
-    gross_profit = sum([t.pnl_after_costs for t in winning_trades])
-    gross_loss = abs(sum([t.pnl_after_costs for t in losing_trades]))
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+    gross_profit_pips = sum([t.pnl_after_costs for t in winning_trades]) if winning_trades else 0.0
+    gross_loss_pips = abs(sum([t.pnl_after_costs for t in losing_trades])) if losing_trades else 0.0
+    profit_factor = gross_profit_pips / gross_loss_pips if gross_loss_pips > 0 else float('inf')
 
-    avg_win = gross_profit / len(winning_trades) if winning_trades else 0.0
-    avg_loss = gross_loss / len(losing_trades) if losing_trades else 0.0
+    expected_payoff_pips = total_pnl_after_costs / total_trades
 
-    # Calculate max drawdown
+    # Win/Loss metrics
+    avg_win_pips = gross_profit_pips / len(winning_trades) if winning_trades else 0.0
+    avg_loss_pips = gross_loss_pips / len(losing_trades) if losing_trades else 0.0
+    avg_win = avg_win_pips  # Alias for compatibility
+    avg_loss = avg_loss_pips  # Alias for compatibility
+
+    largest_win_pips = max([t.pnl_after_costs for t in winning_trades]) if winning_trades else 0.0
+    largest_loss_pips = abs(min([t.pnl_after_costs for t in losing_trades])) if losing_trades else 0.0
+
+    # Consecutive wins/losses
+    max_consecutive_wins = 0
+    max_consecutive_losses = 0
+    max_consecutive_wins_pnl = 0.0
+    max_consecutive_losses_pnl = 0.0
+
+    current_wins = 0
+    current_losses = 0
+    current_wins_pnl = 0.0
+    current_losses_pnl = 0.0
+
+    for trade in completed_trades:
+        if trade.status == "win":
+            current_wins += 1
+            current_wins_pnl += trade.pnl_after_costs
+            current_losses = 0
+            current_losses_pnl = 0.0
+
+            if current_wins > max_consecutive_wins:
+                max_consecutive_wins = current_wins
+                max_consecutive_wins_pnl = current_wins_pnl
+        else:  # loss
+            current_losses += 1
+            current_losses_pnl += abs(trade.pnl_after_costs)
+            current_wins = 0
+            current_wins_pnl = 0.0
+
+            if current_losses > max_consecutive_losses:
+                max_consecutive_losses = current_losses
+                max_consecutive_losses_pnl = current_losses_pnl
+
+    # Long/Short breakdown
+    long_trades = [t for t in completed_trades if t.direction == "BUY"]
+    short_trades = [t for t in completed_trades if t.direction == "SELL"]
+
+    trade_count_long = len(long_trades)
+    trade_count_short = len(short_trades)
+
+    long_wins = [t for t in long_trades if t.status == "win"]
+    short_wins = [t for t in short_trades if t.status == "win"]
+
+    win_rate_long = (len(long_wins) / trade_count_long * 100) if trade_count_long > 0 else 0.0
+    win_rate_short = (len(short_wins) / trade_count_short * 100) if trade_count_short > 0 else 0.0
+
+    # Calculate max drawdown in pips
     equity_curve = []
     running_pnl = 0.0
     for trade in completed_trades:
@@ -597,42 +676,112 @@ def run_backtest(
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
 
+    # Calculate max drawdown as percentage of starting balance
+    max_drawdown_usd = max_drawdown * usd_per_pip_per_lot * lot_size
+    max_drawdown_pct = (max_drawdown_usd / starting_balance_usd * 100) if starting_balance_usd > 0 else 0.0
+
+    # Recovery factor
+    recovery_factor = total_pnl_after_costs / max_drawdown if max_drawdown > 0 else 0.0
+
     results = {
+        # Trade counts
         "total_trades": total_trades,
         "winning_trades": len(winning_trades),
         "losing_trades": len(losing_trades),
+        "trade_count_long": trade_count_long,
+        "trade_count_short": trade_count_short,
+
+        # Win rates
         "win_rate": win_rate,
+        "accuracy": accuracy,
+        "profit_trades_pct": profit_trades_pct,
+        "loss_trades_pct": loss_trades_pct,
+        "win_rate_long": win_rate_long,
+        "win_rate_short": win_rate_short,
+
+        # Profitability
         "profit_factor": profit_factor,
+        "recovery_factor": recovery_factor,
+        "expected_payoff_pips": expected_payoff_pips,
+
+        # P&L
         "total_pnl_pips": total_pnl_pips,
         "total_pnl_after_costs": total_pnl_after_costs,
+        "gross_profit_pips": gross_profit_pips,
+        "gross_loss_pips": gross_loss_pips,
+
+        # Drawdown
         "max_drawdown": max_drawdown,
+        "max_drawdown_pct": max_drawdown_pct,
+
+        # Win/Loss stats
+        "largest_win_pips": largest_win_pips,
+        "largest_loss_pips": largest_loss_pips,
         "avg_win": avg_win,
         "avg_loss": avg_loss,
+        "avg_win_pips": avg_win_pips,
+        "avg_loss_pips": avg_loss_pips,
+
+        # Consecutive
+        "max_consecutive_wins": max_consecutive_wins,
+        "max_consecutive_losses": max_consecutive_losses,
+        "max_consecutive_wins_pnl": max_consecutive_wins_pnl,
+        "max_consecutive_losses_pnl": max_consecutive_losses_pnl,
+
+        # Frequency
         "trade_frequency": (total_trades / bars) * 100,
+
+        # Meta
         "signals": signals_generated,
         "filters": filter_rejections,
         "trades": completed_trades
     }
 
     if verbose:
+        # MT5 Strategy Tester style report
         print("=" * 70)
-        print("BACKTEST RESULTS")
+        print("BACKTEST RESULTS - STRATEGY TESTER REPORT")
         print("=" * 70)
-        print(f"\nTrading Statistics")
-        print(f"  Total Trades: {total_trades}")
-        print(f"  Winning: {len(winning_trades)} ({win_rate:.1f}%)")
-        print(f"  Losing: {len(losing_trades)} ({100 - win_rate:.1f}%)")
-        print(f"\nProfitability")
-        print(f"  Profit Factor: {profit_factor:.2f}")
-        print(f"  Total P&L (before costs): {total_pnl_pips:+.1f} pips")
-        print(f"  Total P&L (after costs): {total_pnl_after_costs:+.1f} pips")
-        print(f"  Cost Impact: {total_pnl_pips - total_pnl_after_costs:.1f} pips")
-        print(f"  Max Drawdown: {max_drawdown:.1f} pips")
-        print(f"  Avg Win: +{avg_win:.1f} pips")
-        print(f"  Avg Loss: -{avg_loss:.1f} pips")
-        print(f"\nFilters")
-        print(f"  Confidence Rejections: {filter_rejections['confidence']}")
-        print(f"  Broken Level Rejections: {filter_rejections['broken_level']}")
+
+        print(f"\n{'Trades':<30} {total_trades:>10}")
+        print(f"{'Profit trades (% of total)':<30} {len(winning_trades):>6} ({profit_trades_pct:.1f}%)")
+        print(f"{'Loss trades (% of total)':<30} {len(losing_trades):>6} ({loss_trades_pct:.1f}%)")
+        print(f"{'  Long trades (won %)':<30} {trade_count_long:>6} ({win_rate_long:.1f}%)")
+        print(f"{'  Short trades (won %)':<30} {trade_count_short:>6} ({win_rate_short:.1f}%)")
+
+        print(f"\n{'Gross Profit':<30} {gross_profit_pips:>10.2f} pips")
+        print(f"{'Gross Loss':<30} {gross_loss_pips:>10.2f} pips")
+        print(f"{'Total Net Profit':<30} {total_pnl_after_costs:>10.2f} pips")
+        pf_str = f"{profit_factor:.2f}" if profit_factor != float('inf') else "Inf"
+        print(f"{'Profit Factor':<30} {pf_str:>10}")
+        print(f"{'Expected Payoff':<30} {expected_payoff_pips:>10.2f} pips")
+        print(f"{'Recovery Factor':<30} {recovery_factor:>10.2f}")
+
+        print(f"\n{'Absolute Drawdown':<30} {max_drawdown:>10.2f} pips")
+        print(f"{'Maximal Drawdown':<30} {max_drawdown:>10.2f} pips ({max_drawdown_pct:.2f}%)")
+        print(f"{'Relative Drawdown':<30} {max_drawdown_pct:>9.2f}% ({max_drawdown:.2f} pips)")
+
+        print(f"\n{'Largest profit trade':<30} {largest_win_pips:>10.2f} pips")
+        print(f"{'Largest loss trade':<30} {largest_loss_pips:>10.2f} pips")
+        print(f"{'Average profit trade':<30} {avg_win_pips:>10.2f} pips")
+        print(f"{'Average loss trade':<30} {avg_loss_pips:>10.2f} pips")
+
+        print(f"\n{'Maximum consecutive wins':<30} {max_consecutive_wins:>6} ({max_consecutive_wins_pnl:+.2f} pips)")
+        print(f"{'Maximum consecutive losses':<30} {max_consecutive_losses:>6} ({max_consecutive_losses_pnl:+.2f} pips)")
+
+        # Cost breakdown
+        cost_impact_pips = total_pnl_pips - total_pnl_after_costs
+        print(f"\n{'--- COST ANALYSIS ---'}")
+        print(f"{'P&L before costs':<30} {total_pnl_pips:>10.2f} pips")
+        print(f"{'Total costs':<30} {cost_impact_pips:>10.2f} pips")
+        print(f"{'P&L after costs':<30} {total_pnl_after_costs:>10.2f} pips")
+
+        # Filter stats
+        print(f"\n{'--- FILTER STATISTICS ---'}")
+        print(f"{'Confidence rejections':<30} {filter_rejections['confidence']:>10}")
+        print(f"{'Broken level rejections':<30} {filter_rejections['broken_level']:>10}")
+        print(f"{'Signals generated (BUY/SELL)':<30} {signals_generated['BUY']}/{signals_generated['SELL']:>5}")
+
         print("=" * 70 + "\n")
 
     return results
@@ -679,6 +828,7 @@ def run_grid_search(
         commission_per_side_per_lot: float = 7.0,
         slippage_pips: float = 0.5,
         usd_per_pip_per_lot: float = 10.0,
+        starting_balance_usd: float = 10000.0,
         df: Optional[pd.DataFrame] = None,
         n_jobs: int = -1
 ) -> pd.DataFrame:
@@ -689,6 +839,7 @@ def run_grid_search(
         param_grid: Dict with parameter names as keys and list of values to test
         symbol, timeframe, bars, lookback_bars: Backtest settings
         spread_pips, commission_per_side_per_lot, slippage_pips, usd_per_pip_per_lot: Cost settings
+        starting_balance_usd: Starting account balance in USD (for drawdown %)
         df: Pre-loaded DataFrame (if None, will fetch from MT5)
         n_jobs: Number of parallel workers (-1 = use all CPU cores, 1 = sequential)
 
@@ -733,7 +884,8 @@ def run_grid_search(
         'spread_pips': spread_pips,
         'commission_per_side_per_lot': commission_per_side_per_lot,
         'slippage_pips': slippage_pips,
-        'usd_per_pip_per_lot': usd_per_pip_per_lot
+        'usd_per_pip_per_lot': usd_per_pip_per_lot,
+        'starting_balance_usd': starting_balance_usd
     }
 
     # Prepare arguments for each worker
@@ -823,6 +975,7 @@ def run_walk_forward(
         commission_per_side_per_lot: float = 7.0,
         slippage_pips: float = 0.5,
         usd_per_pip_per_lot: float = 10.0,
+        starting_balance_usd: float = 10000.0,
         broken_level_break_pips: float = 15.0,
         n_jobs: int = -1
 ) -> pd.DataFrame:
@@ -929,6 +1082,7 @@ def run_walk_forward(
             commission_per_side_per_lot=commission_per_side_per_lot,
             slippage_pips=slippage_pips,
             usd_per_pip_per_lot=usd_per_pip_per_lot,
+            starting_balance_usd=starting_balance_usd,
             df=train_df,
             n_jobs=n_jobs
         )
@@ -966,6 +1120,7 @@ def run_walk_forward(
             commission_per_side_per_lot=commission_per_side_per_lot,
             slippage_pips=slippage_pips,
             usd_per_pip_per_lot=usd_per_pip_per_lot,
+            starting_balance_usd=starting_balance_usd,
             min_confidence=test_param_dict.get('min_confidence'),
             broken_level_cooldown_hours=test_param_dict.get('broken_level_cooldown_hours'),
             broken_level_break_pips=test_param_dict.get('broken_level_break_pips', broken_level_break_pips),
@@ -1062,6 +1217,7 @@ if __name__ == "__main__":
             commission_per_side_per_lot=7.0,
             slippage_pips=0.5,
             usd_per_pip_per_lot=10.0,
+            starting_balance_usd=10000.0,
             min_confidence=0.65,
             broken_level_cooldown_hours=24.0,
             broken_level_break_pips=15.0,
@@ -1086,6 +1242,7 @@ if __name__ == "__main__":
             commission_per_side_per_lot=7.0,
             slippage_pips=0.5,
             usd_per_pip_per_lot=10.0,
+            starting_balance_usd=10000.0,
             n_jobs=-1  # -1 = use all CPU cores, 1 = sequential, N = use N cores
         )
 
@@ -1122,6 +1279,7 @@ if __name__ == "__main__":
             commission_per_side_per_lot=7.0,
             slippage_pips=0.5,
             usd_per_pip_per_lot=10.0,
+            starting_balance_usd=10000.0,
             n_jobs=-1
         )
 
