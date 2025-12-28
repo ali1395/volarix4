@@ -367,31 +367,19 @@ def run_backtest(
             print("  Broken Level Filter: OFF")
         print("=" * 70)
 
-    # Connect to MT5
+    # Fetch historical data (fetch_ohlc handles MT5 connection internally)
     if verbose:
-        print("\nConnecting to MT5...")
-    if not connect_mt5():
-        if verbose:
-            print("✗ Failed to connect to MT5")
-        return {"error": "MT5 connection failed"}
-
-    if verbose:
-        print("✓ Connected to MT5")
-
-    # Fetch historical data
-    if verbose:
-        print(f"\nFetching {bars + lookback_bars} bars...")
+        print(f"\nFetching {bars + lookback_bars} bars for {symbol} {timeframe}...")
     try:
         df = fetch_ohlc(symbol, timeframe, bars + lookback_bars)
+        if df is None or len(df) < lookback_bars:
+            if verbose:
+                print(f"✗ Insufficient data (got {len(df) if df is not None else 0} bars, need {lookback_bars})")
+            return {"error": f"Insufficient data (need {lookback_bars} bars)"}
     except Exception as e:
         if verbose:
-            print(f"✗ Failed to fetch data: {e}")
+            print(f"✗ Data fetch failed: {e}")
         return {"error": f"Data fetch failed: {e}"}
-
-    if df is None or len(df) < lookback_bars:
-        if verbose:
-            print("✗ Insufficient data")
-        return {"error": "Insufficient data"}
 
     if verbose:
         print(f"✓ Fetched {len(df)} bars")
@@ -546,6 +534,8 @@ def run_backtest(
     if total_trades == 0:
         return {
             "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
             "win_rate": 0.0,
             "profit_factor": 0.0,
             "total_pnl_pips": 0.0,
@@ -553,8 +543,10 @@ def run_backtest(
             "max_drawdown": 0.0,
             "avg_win": 0.0,
             "avg_loss": 0.0,
-            "trades": [],
-            "filters": filter_rejections
+            "trade_frequency": 0.0,
+            "signals": signals_generated,
+            "filters": filter_rejections,
+            "trades": []
         }
 
     winning_trades = [t for t in completed_trades if t.status == "win"]
@@ -695,13 +687,21 @@ def run_grid_search(
 
         # Add parameters to results
         result.update(params)
-        results_list.append(result)
+
+        # Only add to results if backtest succeeded (has profit_factor key)
+        if 'profit_factor' in result:
+            results_list.append(result)
+        else:
+            print(f"  FAILED: {result.get('error', 'Unknown error')}")
 
     # Create DataFrame
     df_results = pd.DataFrame(results_list)
 
     # Sort by profit factor (descending)
-    df_results = df_results.sort_values('profit_factor', ascending=False)
+    if len(df_results) > 0:
+        df_results = df_results.sort_values('profit_factor', ascending=False)
+    else:
+        print("\nWARNING: No successful backtests to display")
 
     print("\n" + "=" * 70)
     print("GRID SEARCH COMPLETE")
@@ -754,9 +754,14 @@ if __name__ == "__main__":
     # Display top 10 results
     print("\nTop 10 Parameter Combinations:")
     print("=" * 70)
-    display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'total_trades',
-                   'win_rate', 'profit_factor', 'total_pnl_after_costs', 'max_drawdown']
-    print(results_df[display_cols].head(10).to_string(index=False))
+
+    if len(results_df) > 0:
+        display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'total_trades',
+                       'win_rate', 'profit_factor', 'total_pnl_after_costs', 'max_drawdown']
+        print(results_df[display_cols].head(10).to_string(index=False))
+    else:
+        print("No results to display - all backtests failed")
+
     print("\n" + "=" * 70)
     print("Backtest Suite Complete")
     print("=" * 70 + "\n")

@@ -20,16 +20,16 @@ def connect_mt5() -> bool:
             return False
 
         # Login with credentials
-        authorized = mt5.login(
-            login=CONFIG["mt5_login"],
-            password=CONFIG["mt5_password"],
-            server=CONFIG["mt5_server"]
-        )
-
-        if not authorized:
-            print(f"MT5 login failed, error code: {mt5.last_error()}")
-            mt5.shutdown()
-            return False
+        # authorized = mt5.login(
+        #     login=CONFIG["mt5_login"],
+        #     password=CONFIG["mt5_password"],
+        #     server=CONFIG["mt5_server"]
+        # )
+        #
+        # if not authorized:
+        #     print(f"MT5 login failed, error code: {mt5.last_error()}")
+        #     mt5.shutdown()
+        #     return False
 
         return True
     except Exception as e:
