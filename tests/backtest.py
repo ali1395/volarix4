@@ -20,6 +20,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from itertools import product
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from volarix4.core.data import fetch_ohlc, connect_mt5
 from volarix4.core.sr_levels import detect_sr_levels
 from volarix4.core.rejection import find_rejection_candle
@@ -317,6 +318,8 @@ def run_backtest(
         broken_level_break_pips: float = 15.0,
         enable_confidence_filter: bool = True,
         enable_broken_level_filter: bool = True,
+        # Data
+        df: Optional[pd.DataFrame] = None,
         # Display
         verbose: bool = True
 ) -> Dict:
@@ -338,6 +341,7 @@ def run_backtest(
         broken_level_break_pips: Pips beyond level to mark as broken
         enable_confidence_filter: Enable confidence filtering
         enable_broken_level_filter: Enable broken level filtering
+        df: Pre-loaded DataFrame (if None, will fetch from MT5)
         verbose: Print detailed output
 
     Returns:
@@ -367,23 +371,35 @@ def run_backtest(
             print("  Broken Level Filter: OFF")
         print("=" * 70)
 
-    # Fetch historical data (fetch_ohlc handles MT5 connection internally)
-    if verbose:
-        print(f"\nFetching {bars + lookback_bars} bars for {symbol} {timeframe}...")
-    try:
-        df = fetch_ohlc(symbol, timeframe, bars + lookback_bars)
-        if df is None or len(df) < lookback_bars:
-            if verbose:
-                print(f"✗ Insufficient data (got {len(df) if df is not None else 0} bars, need {lookback_bars})")
-            return {"error": f"Insufficient data (need {lookback_bars} bars)"}
-    except Exception as e:
+    # Get data (either pre-loaded or fetch from MT5)
+    if df is None:
+        # Fetch historical data (fetch_ohlc handles MT5 connection internally)
         if verbose:
-            print(f"✗ Data fetch failed: {e}")
-        return {"error": f"Data fetch failed: {e}"}
+            print(f"\nFetching {bars + lookback_bars} bars for {symbol} {timeframe}...")
+        try:
+            df = fetch_ohlc(symbol, timeframe, bars + lookback_bars)
+            if df is None or len(df) < lookback_bars:
+                if verbose:
+                    print(f"✗ Insufficient data (got {len(df) if df is not None else 0} bars, need {lookback_bars})")
+                return {"error": f"Insufficient data (need {lookback_bars} bars)"}
+        except Exception as e:
+            if verbose:
+                print(f"✗ Data fetch failed: {e}")
+            return {"error": f"Data fetch failed: {e}"}
 
-    if verbose:
-        print(f"✓ Fetched {len(df)} bars")
-        print(f"  Range: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
+        if verbose:
+            print(f"✓ Fetched {len(df)} bars")
+            print(f"  Range: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
+    else:
+        # Use pre-loaded data
+        if len(df) < lookback_bars:
+            if verbose:
+                print(f"✗ Insufficient data (got {len(df)} bars, need {lookback_bars})")
+            return {"error": f"Insufficient data (need {lookback_bars} bars)"}
+
+        if verbose:
+            print(f"\n✓ Using pre-loaded data: {len(df)} bars")
+            print(f"  Range: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
 
     # Backtest variables
     trades: List[Trade] = []
@@ -622,6 +638,37 @@ def run_backtest(
     return results
 
 
+def _run_single_backtest(args):
+    """
+    Worker function for parallel backtest execution.
+    This function is called by each worker process.
+
+    Args:
+        args: Tuple of (params_dict, backtest_kwargs, df_slice)
+
+    Returns:
+        Dict with backtest results merged with parameters
+    """
+    params, backtest_kwargs, df_slice = args
+
+    # Run backtest with these parameters
+    result = run_backtest(
+        min_confidence=params.get('min_confidence'),
+        broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
+        broken_level_break_pips=params.get('broken_level_break_pips', 15.0),
+        enable_confidence_filter='min_confidence' in params,
+        enable_broken_level_filter='broken_level_cooldown_hours' in params,
+        df=df_slice,
+        verbose=False,
+        **backtest_kwargs
+    )
+
+    # Merge parameters into result
+    result.update(params)
+
+    return result
+
+
 def run_grid_search(
         param_grid: Dict,
         symbol: str = "EURUSD",
@@ -631,21 +678,27 @@ def run_grid_search(
         spread_pips: float = 1.0,
         commission_per_side_per_lot: float = 7.0,
         slippage_pips: float = 0.5,
-        usd_per_pip_per_lot: float = 10.0
+        usd_per_pip_per_lot: float = 10.0,
+        df: Optional[pd.DataFrame] = None,
+        n_jobs: int = -1
 ) -> pd.DataFrame:
     """
-    Run grid search over parameter combinations.
+    Run grid search over parameter combinations using parallel processing.
 
     Args:
         param_grid: Dict with parameter names as keys and list of values to test
         symbol, timeframe, bars, lookback_bars: Backtest settings
         spread_pips, commission_per_side_per_lot, slippage_pips, usd_per_pip_per_lot: Cost settings
+        df: Pre-loaded DataFrame (if None, will fetch from MT5)
+        n_jobs: Number of parallel workers (-1 = use all CPU cores, 1 = sequential)
 
     Returns:
         DataFrame with results sorted by profit factor
     """
+    import multiprocessing
+
     print("\n" + "=" * 70)
-    print("GRID SEARCH - Parameter Optimization")
+    print("GRID SEARCH - Parameter Optimization (Multi-Core)")
     print("=" * 70)
     print(f"\nTesting parameter combinations:")
     for param, values in param_grid.items():
@@ -657,42 +710,83 @@ def run_grid_search(
     combinations = list(product(*param_values))
 
     total_combinations = len(combinations)
+
+    # Determine number of workers
+    if n_jobs == -1:
+        n_workers = multiprocessing.cpu_count()
+    elif n_jobs <= 0:
+        n_workers = max(1, multiprocessing.cpu_count() + n_jobs)
+    else:
+        n_workers = min(n_jobs, total_combinations)
+
     print(f"\nTotal combinations: {total_combinations}")
+    print(f"CPU cores available: {multiprocessing.cpu_count()}")
+    print(f"Using {n_workers} parallel workers")
     print("\nRunning backtests...\n")
 
-    results_list = []
+    # Prepare backtest kwargs (common to all backtests)
+    backtest_kwargs = {
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'bars': bars,
+        'lookback_bars': lookback_bars,
+        'spread_pips': spread_pips,
+        'commission_per_side_per_lot': commission_per_side_per_lot,
+        'slippage_pips': slippage_pips,
+        'usd_per_pip_per_lot': usd_per_pip_per_lot
+    }
 
-    for idx, combo in enumerate(combinations, 1):
+    # Prepare arguments for each worker
+    worker_args = []
+    for combo in combinations:
         params = dict(zip(param_names, combo))
+        worker_args.append((params, backtest_kwargs, df))
 
-        print(f"[{idx}/{total_combinations}] Testing: {params}")
+    results_list = []
+    completed = 0
+    failed = 0
 
-        # Run backtest
-        result = run_backtest(
-            symbol=symbol,
-            timeframe=timeframe,
-            bars=bars,
-            lookback_bars=lookback_bars,
-            spread_pips=spread_pips,
-            commission_per_side_per_lot=commission_per_side_per_lot,
-            slippage_pips=slippage_pips,
-            usd_per_pip_per_lot=usd_per_pip_per_lot,
-            min_confidence=params.get('min_confidence'),
-            broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
-            broken_level_break_pips=params.get('broken_level_break_pips', 15.0),
-            enable_confidence_filter='min_confidence' in params,
-            enable_broken_level_filter='broken_level_cooldown_hours' in params,
-            verbose=False
-        )
+    # Run backtests in parallel
+    if n_workers == 1:
+        # Sequential execution (for debugging)
+        for idx, args in enumerate(worker_args, 1):
+            params = args[0]
+            print(f"[{idx}/{total_combinations}] Testing: {params}")
+            result = _run_single_backtest(args)
 
-        # Add parameters to results
-        result.update(params)
+            if 'profit_factor' in result:
+                results_list.append(result)
+                completed += 1
+            else:
+                print(f"  FAILED: {result.get('error', 'Unknown error')}")
+                failed += 1
+    else:
+        # Parallel execution
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            # Submit all jobs
+            future_to_params = {
+                executor.submit(_run_single_backtest, args): args[0]
+                for args in worker_args
+            }
 
-        # Only add to results if backtest succeeded (has profit_factor key)
-        if 'profit_factor' in result:
-            results_list.append(result)
-        else:
-            print(f"  FAILED: {result.get('error', 'Unknown error')}")
+            # Process results as they complete
+            for future in as_completed(future_to_params):
+                params = future_to_params[future]
+                completed += 1
+
+                try:
+                    result = future.result()
+
+                    if 'profit_factor' in result:
+                        results_list.append(result)
+                        print(f"[{completed}/{total_combinations}] ✓ Completed: {params} - PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}")
+                    else:
+                        failed += 1
+                        print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}")
+
+                except Exception as e:
+                    failed += 1
+                    print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}")
 
     # Create DataFrame
     df_results = pd.DataFrame(results_list)
@@ -706,6 +800,238 @@ def run_grid_search(
     print("\n" + "=" * 70)
     print("GRID SEARCH COMPLETE")
     print("=" * 70)
+    print(f"\nSummary:")
+    print(f"  Total tests: {total_combinations}")
+    print(f"  Successful: {len(results_list)}")
+    print(f"  Failed: {failed}")
+    print(f"  Success rate: {(len(results_list)/total_combinations*100):.1f}%")
+    print("=" * 70)
+
+    return df_results
+
+
+def run_walk_forward(
+        symbol: str = "EURUSD",
+        timeframe: str = "H1",
+        total_bars: int = 2000,
+        lookback_bars: int = 400,
+        splits: int = 5,
+        train_bars: int = 300,
+        test_bars: int = 100,
+        param_grid: Optional[Dict] = None,
+        spread_pips: float = 1.0,
+        commission_per_side_per_lot: float = 7.0,
+        slippage_pips: float = 0.5,
+        usd_per_pip_per_lot: float = 10.0,
+        broken_level_break_pips: float = 15.0,
+        n_jobs: int = -1
+) -> pd.DataFrame:
+    """
+    Run walk-forward analysis: train on one segment, test on next segment.
+
+    This prevents overfitting by ensuring test data is never used for parameter optimization.
+
+    Args:
+        symbol, timeframe: Trading pair and timeframe
+        total_bars: Total bars to fetch from MT5
+        lookback_bars: Bars needed for indicator calculation
+        splits: Number of train/test windows
+        train_bars: Size of training segment
+        test_bars: Size of testing segment
+        param_grid: Parameters to optimize (default: min_confidence + cooldown)
+        spread_pips, commission_per_side_per_lot, slippage_pips, usd_per_pip_per_lot: Cost settings
+        broken_level_break_pips: Pips beyond level to mark as broken
+        n_jobs: Number of parallel workers for grid search
+
+    Returns:
+        DataFrame with one row per split containing train/test results
+    """
+    print("\n" + "=" * 70)
+    print("WALK-FORWARD ANALYSIS")
+    print("=" * 70)
+    print(f"\nConfiguration:")
+    print(f"  Symbol: {symbol} {timeframe}")
+    print(f"  Total bars: {total_bars} (+ {lookback_bars} lookback)")
+    print(f"  Splits: {splits}")
+    print(f"  Train bars: {train_bars}")
+    print(f"  Test bars: {test_bars}")
+    print(f"  Segment size: {train_bars + test_bars} bars")
+    print("=" * 70)
+
+    # Default param grid if not provided
+    if param_grid is None:
+        param_grid = {
+            'min_confidence': [0.60, 0.65, 0.70],
+            'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+        }
+
+    # Fetch data once
+    print(f"\nFetching {total_bars + lookback_bars} bars from MT5...")
+    try:
+        df_full = fetch_ohlc(symbol, timeframe, total_bars + lookback_bars)
+        if df_full is None or len(df_full) < lookback_bars + train_bars + test_bars:
+            print(f"✗ Insufficient data")
+            return pd.DataFrame()
+    except Exception as e:
+        print(f"✗ Data fetch failed: {e}")
+        return pd.DataFrame()
+
+    print(f"✓ Fetched {len(df_full)} bars")
+    print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
+
+    # Calculate split positions
+    segment_size = train_bars + test_bars
+    available_bars = len(df_full) - lookback_bars
+    max_splits = available_bars // segment_size
+
+    if splits > max_splits:
+        print(f"\nWARNING: Requested {splits} splits but only {max_splits} possible with current data")
+        splits = max_splits
+
+    print(f"\nRunning {splits} walk-forward splits...")
+
+    split_results = []
+
+    for split_idx in range(splits):
+        print("\n" + "-" * 70)
+        print(f"SPLIT {split_idx + 1}/{splits}")
+        print("-" * 70)
+
+        # Calculate indices for this split
+        split_start = lookback_bars + (split_idx * segment_size)
+        train_start = split_start
+        train_end = train_start + train_bars
+        test_start = train_end
+        test_end = test_start + test_bars
+
+        # Extract segments
+        train_df = df_full.iloc[:train_end].copy()
+        test_df = df_full.iloc[:test_end].copy()
+
+        print(f"\nTrain segment:")
+        print(f"  Bars: {train_start} to {train_end} ({train_bars} bars)")
+        print(f"  Time: {df_full.iloc[train_start]['time']} to {df_full.iloc[train_end-1]['time']}")
+
+        print(f"\nTest segment:")
+        print(f"  Bars: {test_start} to {test_end} ({test_bars} bars)")
+        print(f"  Time: {df_full.iloc[test_start]['time']} to {df_full.iloc[test_end-1]['time']}")
+
+        # TRAIN: Run grid search on train segment
+        print(f"\n[TRAIN] Running grid search on {train_bars} bars...")
+
+        train_results = run_grid_search(
+            param_grid=param_grid,
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=train_bars,
+            lookback_bars=lookback_bars,
+            spread_pips=spread_pips,
+            commission_per_side_per_lot=commission_per_side_per_lot,
+            slippage_pips=slippage_pips,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
+            df=train_df,
+            n_jobs=n_jobs
+        )
+
+        if len(train_results) == 0:
+            print(f"\n✗ No successful backtests in training - skipping split {split_idx + 1}")
+            continue
+
+        # Select best parameters (by profit_factor, then total_pnl_after_costs)
+        best_idx = train_results.sort_values(
+            by=['profit_factor', 'total_pnl_after_costs'],
+            ascending=[False, False]
+        ).index[0]
+        best_params = train_results.loc[best_idx]
+
+        print(f"\n[TRAIN] Best parameters found:")
+        for key in param_grid.keys():
+            print(f"  {key}: {best_params[key]}")
+        print(f"  Train PF: {best_params['profit_factor']:.2f}")
+        print(f"  Train Trades: {best_params['total_trades']}")
+        print(f"  Train PnL: {best_params['total_pnl_after_costs']:.1f} pips")
+
+        # TEST: Run single backtest on test segment with best params
+        print(f"\n[TEST] Testing on {test_bars} bars with best params...")
+
+        # Extract test parameters
+        test_param_dict = {key: best_params[key] for key in param_grid.keys()}
+
+        test_result = run_backtest(
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=test_bars,
+            lookback_bars=lookback_bars,
+            spread_pips=spread_pips,
+            commission_per_side_per_lot=commission_per_side_per_lot,
+            slippage_pips=slippage_pips,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
+            min_confidence=test_param_dict.get('min_confidence'),
+            broken_level_cooldown_hours=test_param_dict.get('broken_level_cooldown_hours'),
+            broken_level_break_pips=test_param_dict.get('broken_level_break_pips', broken_level_break_pips),
+            enable_confidence_filter='min_confidence' in test_param_dict,
+            enable_broken_level_filter='broken_level_cooldown_hours' in test_param_dict,
+            df=test_df,
+            verbose=False
+        )
+
+        if 'profit_factor' not in test_result:
+            print(f"\n✗ Test backtest failed: {test_result.get('error', 'Unknown error')}")
+            continue
+
+        print(f"\n[TEST] Results:")
+        print(f"  Test PF: {test_result['profit_factor']:.2f}")
+        print(f"  Test Trades: {test_result['total_trades']}")
+        print(f"  Test PnL: {test_result['total_pnl_after_costs']:.1f} pips")
+        print(f"  Test Win Rate: {test_result['win_rate']:.1f}%")
+
+        # Store split results
+        split_result = {
+            'split': split_idx + 1,
+            'train_start': df_full.iloc[train_start]['time'],
+            'train_end': df_full.iloc[train_end - 1]['time'],
+            'test_start': df_full.iloc[test_start]['time'],
+            'test_end': df_full.iloc[test_end - 1]['time'],
+            # Best params
+            **{f'param_{k}': v for k, v in test_param_dict.items()},
+            # Train metrics
+            'train_profit_factor': best_params['profit_factor'],
+            'train_total_trades': best_params['total_trades'],
+            'train_win_rate': best_params['win_rate'],
+            'train_total_pnl_after_costs': best_params['total_pnl_after_costs'],
+            'train_max_drawdown': best_params['max_drawdown'],
+            # Test metrics
+            'test_profit_factor': test_result['profit_factor'],
+            'test_total_trades': test_result['total_trades'],
+            'test_win_rate': test_result['win_rate'],
+            'test_total_pnl_after_costs': test_result['total_pnl_after_costs'],
+            'test_max_drawdown': test_result['max_drawdown']
+        }
+
+        split_results.append(split_result)
+
+    # Create results DataFrame
+    df_results = pd.DataFrame(split_results)
+
+    if len(df_results) == 0:
+        print("\n✗ No successful splits")
+        return df_results
+
+    # Print aggregate summary
+    print("\n" + "=" * 70)
+    print("WALK-FORWARD SUMMARY - TEST RESULTS ONLY")
+    print("=" * 70)
+    print(f"\nCompleted splits: {len(df_results)}/{splits}")
+    print(f"\nAggregate test metrics:")
+    print(f"  Mean Profit Factor: {df_results['test_profit_factor'].mean():.2f}")
+    print(f"  Median Profit Factor: {df_results['test_profit_factor'].median():.2f}")
+    print(f"  Total Test Trades: {df_results['test_total_trades'].sum():.0f}")
+    print(f"  Mean Win Rate: {df_results['test_win_rate'].mean():.1f}%")
+    print(f"  Total PnL (after costs): {df_results['test_total_pnl_after_costs'].sum():.1f} pips")
+    print(f"  Mean PnL per split: {df_results['test_total_pnl_after_costs'].mean():.1f} pips")
+    print(f"  Max Drawdown (worst): {df_results['test_max_drawdown'].max():.1f} pips")
+    print(f"  Profitable splits: {(df_results['test_total_pnl_after_costs'] > 0).sum()}/{len(df_results)}")
+    print("=" * 70)
 
     return df_results
 
@@ -714,53 +1040,100 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("VOLARIX 4 BACKTEST SUITE")
     print("=" * 70)
-
-    # Run baseline backtest
-    print("\n>>> Running Baseline Backtest (with costs)\n")
-    baseline = run_backtest(
-        symbol="EURUSD",
-        timeframe="H1",
-        bars=500,
-        lookback_bars=400,
-        spread_pips=1.5,
-        commission_per_side_per_lot=7.0,
-        slippage_pips=0.5,
-        usd_per_pip_per_lot=10.0,
-        min_confidence=0.65,
-        broken_level_cooldown_hours=24.0,
-        broken_level_break_pips=15.0,
-        verbose=True
-    )
-
-    # Run grid search
-    print("\n>>> Running Grid Search\n")
-    param_grid = {
-        'min_confidence': [0.60, 0.65, 0.70, 0.75],
-        'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
-    }
-
-    results_df = run_grid_search(
-        param_grid=param_grid,
-        symbol="EURUSD",
-        timeframe="H1",
-        bars=500,
-        lookback_bars=400,
-        spread_pips=1.5,
-        commission_per_side_per_lot=7.0,
-        slippage_pips=0.5,
-        usd_per_pip_per_lot=10.0
-    )
-
-    # Display top 10 results
-    print("\nTop 10 Parameter Combinations:")
+    print("\nAvailable modes:")
+    print("  1. Baseline - Single backtest with fixed parameters")
+    print("  2. Grid Search - Test multiple parameter combinations")
+    print("  3. Walk-Forward - Train/test splits to avoid overfitting")
+    print("\nSelect mode (or edit __main__ to customize):")
     print("=" * 70)
 
-    if len(results_df) > 0:
-        display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'total_trades',
-                       'win_rate', 'profit_factor', 'total_pnl_after_costs', 'max_drawdown']
-        print(results_df[display_cols].head(10).to_string(index=False))
-    else:
-        print("No results to display - all backtests failed")
+    # Default: Run walk-forward analysis
+    MODE = "walk-forward"  # Options: "baseline", "grid-search", "walk-forward"
+
+    if MODE == "baseline":
+        # Run baseline backtest
+        print("\n>>> Running Baseline Backtest (with costs)\n")
+        baseline = run_backtest(
+            symbol="EURUSD",
+            timeframe="H1",
+            bars=500,
+            lookback_bars=400,
+            spread_pips=1.5,
+            commission_per_side_per_lot=7.0,
+            slippage_pips=0.5,
+            usd_per_pip_per_lot=10.0,
+            min_confidence=0.65,
+            broken_level_cooldown_hours=24.0,
+            broken_level_break_pips=15.0,
+            verbose=True
+        )
+
+    elif MODE == "grid-search":
+        # Run grid search (multi-core)
+        print("\n>>> Running Grid Search (Parallel Processing)\n")
+        param_grid = {
+            'min_confidence': [0.60, 0.65, 0.70, 0.75],
+            'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+        }
+
+        results_df = run_grid_search(
+            param_grid=param_grid,
+            symbol="EURUSD",
+            timeframe="H1",
+            bars=500,
+            lookback_bars=400,
+            spread_pips=1.5,
+            commission_per_side_per_lot=7.0,
+            slippage_pips=0.5,
+            usd_per_pip_per_lot=10.0,
+            n_jobs=-1  # -1 = use all CPU cores, 1 = sequential, N = use N cores
+        )
+
+        # Display top 10 results
+        print("\nTop 10 Parameter Combinations:")
+        print("=" * 70)
+
+        if len(results_df) > 0:
+            display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'total_trades',
+                           'win_rate', 'profit_factor', 'total_pnl_after_costs', 'max_drawdown']
+            print(results_df[display_cols].head(10).to_string(index=False))
+        else:
+            print("No results to display - all backtests failed")
+
+    elif MODE == "walk-forward":
+        # Run walk-forward analysis
+        print("\n>>> Running Walk-Forward Analysis\n")
+
+        param_grid = {
+            'min_confidence': [0.60, 0.65, 0.70],
+            'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+        }
+
+        wf_results = run_walk_forward(
+            symbol="EURUSD",
+            timeframe="H1",
+            total_bars=2000,
+            lookback_bars=400,
+            splits=3,
+            train_bars=400,
+            test_bars=200,
+            param_grid=param_grid,
+            spread_pips=1.5,
+            commission_per_side_per_lot=7.0,
+            slippage_pips=0.5,
+            usd_per_pip_per_lot=10.0,
+            n_jobs=-1
+        )
+
+        # Display detailed results
+        if len(wf_results) > 0:
+            print("\nDetailed Walk-Forward Results:")
+            print("=" * 70)
+            display_cols = ['split', 'param_min_confidence', 'param_broken_level_cooldown_hours',
+                           'train_profit_factor', 'test_profit_factor',
+                           'train_total_trades', 'test_total_trades',
+                           'test_total_pnl_after_costs']
+            print(wf_results[display_cols].to_string(index=False))
 
     print("\n" + "=" * 70)
     print("Backtest Suite Complete")
