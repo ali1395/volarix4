@@ -17,6 +17,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from itertools import product
@@ -1067,6 +1068,7 @@ def run_walk_forward(
     print(f"\nRunning {splits} walk-forward splits...")
 
     split_results = []
+    all_train_results = []  # Store full training grid results for each split
 
     for split_idx in range(splits):
         print("\n" + "-" * 70)
@@ -1236,6 +1238,15 @@ def run_walk_forward(
 
         split_results.append(split_result)
 
+        # Store full training grid results for parameter performance analysis
+        all_train_results.append({
+            'split': split_idx + 1,
+            'train_results': train_results.copy(),  # Full grid search results
+            'best_params': test_param_dict.copy(),  # Params chosen as best
+            'test_profit_factor': test_result['profit_factor'],
+            'test_total_pnl_after_costs': test_result['total_pnl_after_costs']
+        })
+
     # Create results DataFrame
     df_results = pd.DataFrame(split_results)
 
@@ -1302,6 +1313,131 @@ def run_walk_forward(
     print(f"\n{'Profitable splits':<40} {profitable_splits}/{len(df_results)} ({profitable_splits/len(df_results)*100:.1f}%)")
 
     print("=" * 70)
+
+    # ========================================================================
+    # PARAMETER PERFORMANCE ANALYSIS ACROSS SPLITS
+    # ========================================================================
+    if len(all_train_results) > 0:
+        print("\n" + "=" * 70)
+        print("PARAMETER PERFORMANCE ANALYSIS")
+        print("=" * 70)
+
+        # Build aggregated parameter performance table
+        param_performance = {}  # key = tuple of param values, value = list of test results
+
+        for split_data in all_train_results:
+            split_num = split_data['split']
+            train_df = split_data['train_results']
+            best_params = split_data['best_params']
+
+            # For each parameter combination in training grid
+            for idx, row in train_df.iterrows():
+                # Create param tuple as key
+                param_tuple = tuple(sorted([(k, row[k]) for k in param_grid.keys()]))
+
+                if param_tuple not in param_performance:
+                    param_performance[param_tuple] = {
+                        'params': dict(param_tuple),
+                        'count_selected': 0,
+                        'test_profit_factors': [],
+                        'test_pnls': [],
+                        'splits_seen': []
+                    }
+
+                param_performance[param_tuple]['splits_seen'].append(split_num)
+
+                # Check if this combo was chosen as best for this split
+                is_best = all(row[k] == best_params[k] for k in param_grid.keys())
+                if is_best:
+                    param_performance[param_tuple]['count_selected'] += 1
+                    param_performance[param_tuple]['test_profit_factors'].append(split_data['test_profit_factor'])
+                    param_performance[param_tuple]['test_pnls'].append(split_data['test_total_pnl_after_costs'])
+
+        # Compute aggregate metrics for each parameter combination
+        param_summary = []
+        for param_tuple, data in param_performance.items():
+            if len(data['test_profit_factors']) > 0:  # Only combos that were selected at least once
+                # Replace inf with a large number for aggregation
+                pf_values = [pf if pf != float('inf') else 999.0 for pf in data['test_profit_factors']]
+
+                param_summary.append({
+                    'params': data['params'],
+                    'count_selected': data['count_selected'],
+                    'mean_test_pf': np.mean(pf_values),
+                    'median_test_pf': np.median(pf_values),
+                    'mean_test_pnl': np.mean(data['test_pnls']),
+                    'pct_splits_profitable': (sum(1 for pnl in data['test_pnls'] if pnl > 0) / len(data['test_pnls']) * 100)
+                })
+
+        if len(param_summary) > 0:
+            # Sort by median_test_pf (desc), then mean_test_pnl (desc)
+            param_summary.sort(key=lambda x: (x['median_test_pf'], x['mean_test_pnl']), reverse=True)
+
+            print(f"\nParameter Performance Across All Splits (sorted by median OOS PF, then mean OOS PnL):")
+            print("-" * 120)
+            print(f"{'Params':<50} {'Selected':<10} {'Mean PF':<10} {'Med PF':<10} {'Mean PnL':<12} {'% Profit':<10}")
+            print("-" * 120)
+
+            for item in param_summary:
+                params_str = ', '.join([f"{k}={v}" for k, v in item['params'].items()])
+                mean_pf_str = f"{item['mean_test_pf']:.2f}" if item['mean_test_pf'] < 900 else "Inf"
+                med_pf_str = f"{item['median_test_pf']:.2f}" if item['median_test_pf'] < 900 else "Inf"
+
+                print(f"{params_str:<50} {item['count_selected']:<10} {mean_pf_str:<10} {med_pf_str:<10} {item['mean_test_pnl']:<12.1f} {item['pct_splits_profitable']:<10.1f}")
+
+            print("-" * 120)
+
+        # ====================================================================
+        # TOP-3 PARAMETER COMBOS PER SPLIT (TRAIN PF) + OOS PERFORMANCE
+        # ====================================================================
+        print("\n" + "=" * 70)
+        print("TOP-3 PARAMETER COMBOS PER SPLIT (by train PF) + OOS Performance")
+        print("=" * 70)
+
+        for split_data in all_train_results:
+            split_num = split_data['split']
+            train_df = split_data['train_results'].copy()
+            best_params = split_data['best_params']
+
+            # Sort by train profit_factor descending
+            train_df_sorted = train_df.sort_values(
+                by=['profit_factor', 'total_pnl_after_costs'],
+                ascending=[False, False]
+            ).head(3)
+
+            print(f"\nSplit {split_num}:")
+            print("  " + "-" * 66)
+            print(f"  {'Rank':<6} {'Params':<35} {'Train PF':<12} {'OOS PF':<12} {'OOS PnL':<12}")
+            print("  " + "-" * 66)
+
+            for rank, (idx, row) in enumerate(train_df_sorted.iterrows(), 1):
+                # Build param string
+                params_str = ', '.join([f"{k}={row[k]}" for k in param_grid.keys()])
+
+                # Check if this combo was the best (i.e., has OOS test result)
+                is_best = all(row[k] == best_params[k] for k in param_grid.keys())
+
+                train_pf_str = f"{row['profit_factor']:.2f}" if row['profit_factor'] != float('inf') else "Inf"
+
+                if is_best:
+                    # This combo was chosen - we have OOS results
+                    oos_pf = split_data['test_profit_factor']
+                    oos_pnl = split_data['test_total_pnl_after_costs']
+                    oos_pf_str = f"{oos_pf:.2f}" if oos_pf != float('inf') else "Inf"
+                    oos_pnl_str = f"{oos_pnl:.1f}"
+                    marker = " *"  # Mark the chosen combo
+                else:
+                    # Not chosen - no OOS test
+                    oos_pf_str = "N/A"
+                    oos_pnl_str = "N/A"
+                    marker = ""
+
+                print(f"  {rank:<6} {params_str:<35} {train_pf_str:<12} {oos_pf_str:<12} {oos_pnl_str:<12}{marker}")
+
+            print("  " + "-" * 66)
+            print("  * = Selected as best and tested OOS")
+
+        print("=" * 70)
 
     return df_results
 
