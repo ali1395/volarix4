@@ -35,7 +35,9 @@ class Trade:
     def __init__(self, entry_time, direction, entry, sl, tp1, tp2, tp3,
                  pip_value, spread_pips=0.0, slippage_pips=0.0,
                  commission_per_side_per_lot=0.0, lot_size=1.0):
+        # Basic trade info
         self.entry_time = entry_time
+        self.entry_bar_time = entry_time  # Alias for consistency
         self.direction = direction
         self.entry_raw = entry
         self.sl = sl
@@ -44,6 +46,7 @@ class Trade:
         self.tp3 = tp3
         self.status = "open"
         self.exit_time = None
+        self.exit_bar_time = None  # Will be set on exit
         self.exit_price = None
         self.pnl = 0.0
         self.pnl_pips = 0.0
@@ -57,13 +60,25 @@ class Trade:
         self.commission_per_side_per_lot = commission_per_side_per_lot
         self.lot_size = lot_size
 
+        # Context at entry (to be populated by caller)
+        self.rejection_confidence = None
+        self.level_price = None
+        self.level_type = None  # 'support' or 'resistance'
+        self.sl_pips = None
+        self.tp1_pips = None
+        self.hour_of_day = None
+        self.day_of_week = None
+        self.atr_pips_14 = None
+
         # Apply entry costs
         if direction == "BUY":
             # Entry: pay spread + slippage
             self.entry = entry + (spread_pips / 2 + slippage_pips) * pip_value
+            self.entry_after_costs = self.entry
         else:  # SELL
             # Entry: pay spread + slippage
             self.entry = entry - (spread_pips / 2 + slippage_pips) * pip_value
+            self.entry_after_costs = self.entry
 
         # Entry commission (1 side)
         self.entry_commission = commission_per_side_per_lot * lot_size
@@ -109,6 +124,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
         if bar['low'] <= trade.sl:
             trade.status = "loss"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
             exit_price_after_costs = apply_exit_costs(trade, trade.sl)
             trade.exit_price = exit_price_after_costs
             trade.pnl_pips = (exit_price_after_costs - trade.entry) / trade.pip_value
@@ -129,6 +145,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # All TPs hit
             trade.status = "win"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
 
             # Calculate weighted PnL with costs
             tp1_exit = apply_exit_costs(trade, trade.tp1)
@@ -158,6 +175,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # TP2 hit
             trade.status = "win"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
 
             tp1_exit = apply_exit_costs(trade, trade.tp1)
             tp2_exit = apply_exit_costs(trade, trade.tp2)
@@ -184,6 +202,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # TP1 hit
             trade.status = "win"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
 
             tp1_exit = apply_exit_costs(trade, trade.tp1)
             tp1_pips = (tp1_exit - trade.entry) / trade.pip_value
@@ -208,6 +227,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
         if bar['high'] >= trade.sl:
             trade.status = "loss"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
             exit_price_after_costs = apply_exit_costs(trade, trade.sl)
             trade.exit_price = exit_price_after_costs
             trade.pnl_pips = (trade.entry - exit_price_after_costs) / trade.pip_value
@@ -228,6 +248,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
         if bar['low'] <= trade.tp3:
             trade.status = "win"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
 
             tp1_exit = apply_exit_costs(trade, trade.tp1)
             tp2_exit = apply_exit_costs(trade, trade.tp2)
@@ -255,6 +276,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
         elif bar['low'] <= trade.tp2:
             trade.status = "win"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
 
             tp1_exit = apply_exit_costs(trade, trade.tp1)
             tp2_exit = apply_exit_costs(trade, trade.tp2)
@@ -280,6 +302,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
         elif bar['low'] <= trade.tp1:
             trade.status = "win"
             trade.exit_time = bar['time']
+            trade.exit_bar_time = bar['time']
 
             tp1_exit = apply_exit_costs(trade, trade.tp1)
             tp1_pips = (trade.entry - tp1_exit) / trade.pip_value
@@ -300,6 +323,195 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             return True
 
     return False
+
+
+def calculate_atr_pips(df: pd.DataFrame, period: int = 14, pip_value: float = 0.0001) -> float:
+    """
+    Calculate Average True Range (ATR) in pips for the last N bars.
+
+    Args:
+        df: DataFrame with OHLC data
+        period: Lookback period (default: 14)
+        pip_value: Pip size (default: 0.0001 for most pairs)
+
+    Returns:
+        ATR in pips
+    """
+    if len(df) < period:
+        return 0.0
+
+    # Calculate True Range for last N bars
+    df_subset = df.tail(period).copy()
+
+    # True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
+    df_subset['h_l'] = df_subset['high'] - df_subset['low']
+    df_subset['h_pc'] = abs(df_subset['high'] - df_subset['close'].shift(1))
+    df_subset['l_pc'] = abs(df_subset['low'] - df_subset['close'].shift(1))
+
+    df_subset['tr'] = df_subset[['h_l', 'h_pc', 'l_pc']].max(axis=1)
+
+    # ATR = average of True Range
+    atr = df_subset['tr'].mean()
+    atr_pips = atr / pip_value
+
+    return atr_pips
+
+
+def trades_to_dataframe(trades: List[Trade]) -> pd.DataFrame:
+    """Convert list of Trade objects to pandas DataFrame."""
+    if not trades:
+        return pd.DataFrame()
+
+    trades_data = []
+    for trade in trades:
+        trades_data.append({
+            'entry_bar_time': trade.entry_bar_time,
+            'exit_bar_time': trade.exit_bar_time,
+            'direction': trade.direction,
+            'entry_raw': trade.entry_raw,
+            'entry_after_costs': trade.entry_after_costs,
+            'exit_price': trade.exit_price,
+            'sl': trade.sl,
+            'tp1': trade.tp1,
+            'tp2': trade.tp2,
+            'tp3': trade.tp3,
+            'exit_reason': trade.exit_reason,
+            'pnl_pips': trade.pnl_pips,
+            'pnl_after_costs': trade.pnl_after_costs,
+            'status': trade.status,
+            # Context
+            'rejection_confidence': trade.rejection_confidence,
+            'level_price': trade.level_price,
+            'level_type': trade.level_type,
+            'sl_pips': trade.sl_pips,
+            'tp1_pips': trade.tp1_pips,
+            'hour_of_day': trade.hour_of_day,
+            'day_of_week': trade.day_of_week,
+            'atr_pips_14': trade.atr_pips_14
+        })
+
+    return pd.DataFrame(trades_data)
+
+
+def print_bucket_diagnostics(trades: List[Trade], bucket_name: str = "TEST"):
+    """
+    Print bucket diagnostics for trades.
+
+    Buckets:
+    - BUY vs SELL
+    - Hour of day (Asian/London/NY)
+    - ATR quartiles
+    - Confidence bins
+    """
+    if not trades:
+        print(f"\n[{bucket_name}] No trades to analyze")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"[{bucket_name}] BUCKET DIAGNOSTICS")
+    print(f"{'='*70}")
+
+    # Helper function to compute bucket stats
+    def bucket_stats(trade_list):
+        if not trade_list:
+            return {
+                'count': 0,
+                'net_pnl': 0.0,
+                'profit_factor': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0
+            }
+
+        count = len(trade_list)
+        net_pnl = sum(t.pnl_after_costs for t in trade_list)
+
+        profit_deals = [t for t in trade_list if t.pnl_after_costs > 0]
+        loss_deals = [t for t in trade_list if t.pnl_after_costs < 0]
+
+        gross_profit = sum(t.pnl_after_costs for t in profit_deals) if profit_deals else 0.0
+        gross_loss = abs(sum(t.pnl_after_costs for t in loss_deals)) if loss_deals else 0.0
+
+        pf = gross_profit / gross_loss if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
+        avg_win = gross_profit / len(profit_deals) if profit_deals else 0.0
+        avg_loss = gross_loss / len(loss_deals) if loss_deals else 0.0
+
+        return {
+            'count': count,
+            'net_pnl': net_pnl,
+            'profit_factor': pf,
+            'avg_win': avg_win,
+            'avg_loss': avg_loss
+        }
+
+    # 1. BUY vs SELL
+    print(f"\n1. DIRECTION BUCKETS:")
+    print(f"{'Bucket':<15} {'Trades':<8} {'Net PnL':<12} {'PF':<10} {'Avg Win':<10} {'Avg Loss':<10}")
+    print("-" * 70)
+
+    buy_trades = [t for t in trades if t.direction == "BUY"]
+    sell_trades = [t for t in trades if t.direction == "SELL"]
+
+    for direction, trade_list in [("BUY", buy_trades), ("SELL", sell_trades)]:
+        stats = bucket_stats(trade_list)
+        pf_str = f"{stats['profit_factor']:.2f}" if stats['profit_factor'] != float('inf') else "Inf"
+        print(f"{direction:<15} {stats['count']:<8} {stats['net_pnl']:<12.1f} {pf_str:<10} "
+              f"{stats['avg_win']:<10.1f} {stats['avg_loss']:<10.1f}")
+
+    # 2. Hour of Day Buckets
+    print(f"\n2. HOUR OF DAY BUCKETS:")
+    print(f"{'Bucket':<15} {'Trades':<8} {'Net PnL':<12} {'PF':<10} {'Avg Win':<10} {'Avg Loss':<10}")
+    print("-" * 70)
+
+    asian_trades = [t for t in trades if t.hour_of_day is not None and 0 <= t.hour_of_day < 8]
+    london_trades = [t for t in trades if t.hour_of_day is not None and 8 <= t.hour_of_day < 16]
+    ny_trades = [t for t in trades if t.hour_of_day is not None and 16 <= t.hour_of_day < 24]
+
+    for session, trade_list in [("Asian (0-7)", asian_trades), ("London (8-15)", london_trades), ("NY (16-23)", ny_trades)]:
+        stats = bucket_stats(trade_list)
+        pf_str = f"{stats['profit_factor']:.2f}" if stats['profit_factor'] != float('inf') else "Inf"
+        print(f"{session:<15} {stats['count']:<8} {stats['net_pnl']:<12.1f} {pf_str:<10} "
+              f"{stats['avg_win']:<10.1f} {stats['avg_loss']:<10.1f}")
+
+    # 3. ATR Quartiles
+    print(f"\n3. ATR VOLATILITY BUCKETS:")
+    print(f"{'Bucket':<15} {'Trades':<8} {'Net PnL':<12} {'PF':<10} {'Avg Win':<10} {'Avg Loss':<10}")
+    print("-" * 70)
+
+    atr_trades = [t for t in trades if t.atr_pips_14 is not None and t.atr_pips_14 > 0]
+    if atr_trades:
+        atr_values = sorted([t.atr_pips_14 for t in atr_trades])
+        q1 = np.percentile(atr_values, 25)
+        q2 = np.percentile(atr_values, 50)
+        q3 = np.percentile(atr_values, 75)
+
+        low_atr = [t for t in atr_trades if t.atr_pips_14 <= q1]
+        med_atr = [t for t in atr_trades if q1 < t.atr_pips_14 <= q3]
+        high_atr = [t for t in atr_trades if t.atr_pips_14 > q3]
+
+        for volatility, trade_list in [("Low ATR", low_atr), ("Medium ATR", med_atr), ("High ATR", high_atr)]:
+            stats = bucket_stats(trade_list)
+            pf_str = f"{stats['profit_factor']:.2f}" if stats['profit_factor'] != float('inf') else "Inf"
+            print(f"{volatility:<15} {stats['count']:<8} {stats['net_pnl']:<12.1f} {pf_str:<10} "
+                  f"{stats['avg_win']:<10.1f} {stats['avg_loss']:<10.1f}")
+
+    # 4. Confidence Bins
+    print(f"\n4. CONFIDENCE BUCKETS:")
+    print(f"{'Bucket':<15} {'Trades':<8} {'Net PnL':<12} {'PF':<10} {'Avg Win':<10} {'Avg Loss':<10}")
+    print("-" * 70)
+
+    conf_trades = [t for t in trades if t.rejection_confidence is not None]
+    if conf_trades:
+        low_conf = [t for t in conf_trades if t.rejection_confidence < 0.6]
+        mid_conf = [t for t in conf_trades if 0.6 <= t.rejection_confidence < 0.7]
+        high_conf = [t for t in conf_trades if t.rejection_confidence >= 0.7]
+
+        for conf_level, trade_list in [("<0.6", low_conf), ("0.6-0.7", mid_conf), ("≥0.7", high_conf)]:
+            stats = bucket_stats(trade_list)
+            pf_str = f"{stats['profit_factor']:.2f}" if stats['profit_factor'] != float('inf') else "Inf"
+            print(f"{conf_level:<15} {stats['count']:<8} {stats['net_pnl']:<12.1f} {pf_str:<10} "
+                  f"{stats['avg_win']:<10.1f} {stats['avg_loss']:<10.1f}")
+
+    print(f"{'='*70}\n")
 
 
 def monte_carlo_reshuffle(pnl_list: List[float], observed_max_dd: float, n_simulations: int = 1000) -> Dict:
