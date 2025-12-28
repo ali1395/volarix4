@@ -1197,6 +1197,31 @@ def run_walk_forward(
         print(f"  {'Average loss trade':<35} {test_result['avg_loss_pips']:>10.2f} pips")
         print("  " + "-" * 60)
 
+        # Calculate and display degradation metrics
+        train_pf = best_params['profit_factor']
+        test_pf = test_result['profit_factor']
+        pf_degradation = test_pf / max(train_pf, 1e-9)
+
+        train_ep = best_params['expected_payoff_pips']
+        test_ep = test_result['expected_payoff_pips']
+        ep_degradation = test_ep / max(train_ep, 1e-9) if train_ep > 0 else (0.0 if test_ep <= 0 else float('inf'))
+
+        print(f"\n[DEGRADATION] Train → Test Performance:")
+        print("  " + "-" * 60)
+        train_pf_str = f"{train_pf:.2f}" if train_pf != float('inf') else "Inf"
+        test_pf_str = f"{test_pf:.2f}" if test_pf != float('inf') else "Inf"
+        print(f"  {'Profit Factor':<35} {train_pf_str} → {test_pf_str} ({pf_degradation:.2f}x)")
+        print(f"  {'Expected Payoff':<35} {train_ep:.2f} → {test_ep:.2f} ({ep_degradation:.2f}x)")
+
+        # Interpretation
+        if pf_degradation >= 0.8:
+            print(f"  {'Status':<35} ✓ Good (minimal degradation)")
+        elif pf_degradation >= 0.6:
+            print(f"  {'Status':<35} ⚠ Moderate degradation")
+        else:
+            print(f"  {'Status':<35} ✗ High degradation (possible overfitting)")
+        print("  " + "-" * 60)
+
         # Store split results
         split_result = {
             'split': split_idx + 1,
@@ -1233,7 +1258,11 @@ def run_walk_forward(
             'test_trade_count_long': test_result['trade_count_long'],
             'test_trade_count_short': test_result['trade_count_short'],
             'test_win_rate_long': test_result['win_rate_long'],
-            'test_win_rate_short': test_result['win_rate_short']
+            'test_win_rate_short': test_result['win_rate_short'],
+            # Degradation metrics (overfitting detection)
+            'train_expected_payoff_pips': best_params['expected_payoff_pips'],
+            'pf_degradation': test_result['profit_factor'] / max(best_params['profit_factor'], 1e-9),
+            'expected_payoff_degradation': test_result['expected_payoff_pips'] / max(best_params['expected_payoff_pips'], 1e-9) if best_params['expected_payoff_pips'] > 0 else (0.0 if test_result['expected_payoff_pips'] <= 0 else float('inf'))
         }
 
         split_results.append(split_result)
@@ -1311,6 +1340,38 @@ def run_walk_forward(
     # Overall performance
     profitable_splits = (df_results['test_total_pnl_after_costs'] > 0).sum()
     print(f"\n{'Profitable splits':<40} {profitable_splits}/{len(df_results)} ({profitable_splits/len(df_results)*100:.1f}%)")
+
+    # Overfitting detection (degradation metrics)
+    print(f"\n{'OVERFITTING DETECTION (Train → Test Degradation)'}")
+    print("-" * 70)
+
+    # PF degradation (ratio = test_pf / train_pf)
+    median_pf_degradation = df_results['pf_degradation'].median()
+    worst_pf_degradation = df_results['pf_degradation'].min()
+    worst_pf_split = df_results.loc[df_results['pf_degradation'].idxmin(), 'split']
+
+    print(f"{'Median PF Degradation':<40} {median_pf_degradation:.2f} (test/train ratio)")
+    print(f"{'Worst PF Degradation':<40} {worst_pf_degradation:.2f} (split {worst_pf_split:.0f})")
+
+    # Expected payoff degradation
+    median_ep_degradation = df_results['expected_payoff_degradation'].median()
+    worst_ep_degradation = df_results['expected_payoff_degradation'].min()
+    worst_ep_split = df_results.loc[df_results['expected_payoff_degradation'].idxmin(), 'split']
+
+    print(f"{'Median Expected Payoff Degradation':<40} {median_ep_degradation:.2f} (test/train ratio)")
+    print(f"{'Worst Expected Payoff Degradation':<40} {worst_ep_degradation:.2f} (split {worst_ep_split:.0f})")
+
+    # Interpretation
+    print(f"\nInterpretation:")
+    if median_pf_degradation >= 0.8:
+        print(f"  ✓ Good: Median PF degradation {median_pf_degradation:.2f} ≥ 0.8 (low overfitting)")
+    elif median_pf_degradation >= 0.6:
+        print(f"  ⚠ Moderate: Median PF degradation {median_pf_degradation:.2f} (some overfitting)")
+    else:
+        print(f"  ✗ Poor: Median PF degradation {median_pf_degradation:.2f} < 0.6 (high overfitting)")
+
+    if worst_pf_degradation < 0.5:
+        print(f"  ⚠ Warning: Worst split degradation {worst_pf_degradation:.2f} < 0.5 (severe degradation in split {worst_pf_split:.0f})")
 
     print("=" * 70)
 
