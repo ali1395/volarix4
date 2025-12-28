@@ -321,6 +321,7 @@ def run_backtest(
         enable_broken_level_filter: bool = True,
         # Data
         df: Optional[pd.DataFrame] = None,
+        enforce_bars_limit: bool = True,
         # Display
         verbose: bool = True
 ) -> Dict:
@@ -344,6 +345,7 @@ def run_backtest(
         enable_confidence_filter: Enable confidence filtering
         enable_broken_level_filter: Enable broken level filtering
         df: Pre-loaded DataFrame (if None, will fetch from MT5)
+        enforce_bars_limit: If True, only process last (lookback_bars + bars) rows
         verbose: Print detailed output
 
     Returns:
@@ -402,6 +404,15 @@ def run_backtest(
         if verbose:
             print(f"\n✓ Using pre-loaded data: {len(df)} bars")
             print(f"  Range: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
+
+    # Enforce bars limit: only use last (lookback_bars + bars) rows
+    if enforce_bars_limit:
+        required_bars = lookback_bars + bars
+        if len(df) > required_bars:
+            df = df.iloc[-required_bars:].copy()
+            if verbose:
+                print(f"  Enforcing bars limit: using last {required_bars} bars")
+                print(f"  Evaluation window: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
 
     # Backtest variables
     trades: List[Trade] = []
@@ -808,6 +819,7 @@ def _run_single_backtest(args):
         enable_confidence_filter='min_confidence' in params,
         enable_broken_level_filter='broken_level_cooldown_hours' in params,
         df=df_slice,
+        enforce_bars_limit=True,
         verbose=False,
         **backtest_kwargs
     )
@@ -1057,16 +1069,32 @@ def run_walk_forward(
         test_start = train_end
         test_end = test_start + test_bars
 
-        # Extract segments
-        train_df = df_full.iloc[:train_end].copy()
-        test_df = df_full.iloc[:test_end].copy()
+        # Safety check: ensure we have enough lookback bars
+        train_start_with_lookback = train_start - lookback_bars
+        test_start_with_lookback = test_start - lookback_bars
+
+        if train_start_with_lookback < 0:
+            print(f"\n✗ Skip split {split_idx + 1}: insufficient lookback bars for training")
+            print(f"  Need index {train_start_with_lookback}, but minimum is 0")
+            continue
+
+        if test_start_with_lookback < 0:
+            print(f"\n✗ Skip split {split_idx + 1}: insufficient lookback bars for testing")
+            print(f"  Need index {test_start_with_lookback}, but minimum is 0")
+            continue
+
+        # Extract segments with lookback bars included
+        train_df = df_full.iloc[train_start_with_lookback:train_end].copy()
+        test_df = df_full.iloc[test_start_with_lookback:test_end].copy()
 
         print(f"\nTrain segment:")
-        print(f"  Bars: {train_start} to {train_end} ({train_bars} bars)")
+        print(f"  Data range (with lookback): index {train_start_with_lookback} to {train_end}")
+        print(f"  Evaluation bars: {train_bars}")
         print(f"  Time: {df_full.iloc[train_start]['time']} to {df_full.iloc[train_end-1]['time']}")
 
         print(f"\nTest segment:")
-        print(f"  Bars: {test_start} to {test_end} ({test_bars} bars)")
+        print(f"  Data range (with lookback): index {test_start_with_lookback} to {test_end}")
+        print(f"  Evaluation bars: {test_bars}")
         print(f"  Time: {df_full.iloc[test_start]['time']} to {df_full.iloc[test_end-1]['time']}")
 
         # TRAIN: Run grid search on train segment
@@ -1127,6 +1155,7 @@ def run_walk_forward(
             enable_confidence_filter='min_confidence' in test_param_dict,
             enable_broken_level_filter='broken_level_cooldown_hours' in test_param_dict,
             df=test_df,
+            enforce_bars_limit=True,
             verbose=False
         )
 
