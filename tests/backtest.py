@@ -1140,6 +1140,7 @@ def run_walk_forward(
 
     split_results = []
     all_train_results = []  # Store full training grid results for each split
+    param_stability_data = []  # Store ALL param combo test results across all splits
 
     for split_idx in range(splits):
         print("\n" + "-" * 70)
@@ -1335,6 +1336,55 @@ def run_walk_forward(
             }
 
         print("  " + "-" * 60)
+
+        # ================================================================
+        # TEST ALL PARAMETER COMBINATIONS (for parameter stability analysis)
+        # ================================================================
+        print(f"\n[STABILITY] Testing all {len(train_results)} parameter combinations on test set...")
+
+        all_test_results = []  # Store test results for all param combos
+
+        for idx, row in train_results.iterrows():
+            # Extract params for this combo
+            combo_params = {key: row[key] for key in param_grid.keys()}
+
+            # Run test backtest with this param combo
+            combo_test_result = run_backtest(
+                symbol=symbol,
+                timeframe=timeframe,
+                bars=test_bars,
+                lookback_bars=lookback_bars,
+                spread_pips=spread_pips,
+                commission_per_side_per_lot=commission_per_side_per_lot,
+                slippage_pips=slippage_pips,
+                usd_per_pip_per_lot=usd_per_pip_per_lot,
+                starting_balance_usd=starting_balance_usd,
+                min_confidence=combo_params.get('min_confidence'),
+                broken_level_cooldown_hours=combo_params.get('broken_level_cooldown_hours'),
+                broken_level_break_pips=combo_params.get('broken_level_break_pips', broken_level_break_pips),
+                enable_confidence_filter='min_confidence' in combo_params,
+                enable_broken_level_filter='broken_level_cooldown_hours' in combo_params,
+                df=test_df,
+                enforce_bars_limit=True,
+                verbose=False
+            )
+
+            # Store result with params
+            if 'profit_factor' in combo_test_result:
+                all_test_results.append({
+                    'split': split_idx + 1,
+                    'params': combo_params.copy(),
+                    'test_profit_factor': combo_test_result['profit_factor'],
+                    'test_total_pnl_after_costs': combo_test_result['total_pnl_after_costs'],
+                    'test_total_trades': combo_test_result['total_trades'],
+                    'test_win_rate': combo_test_result['win_rate'],
+                    'is_best': all(combo_params[k] == test_param_dict[k] for k in param_grid.keys())
+                })
+
+        print(f"  ✓ Tested {len(all_test_results)} combinations on test set")
+
+        # Add to global parameter stability data
+        param_stability_data.extend(all_test_results)
 
         # Store split results
         split_result = {
@@ -1664,6 +1714,127 @@ def run_walk_forward(
             print("  " + "-" * 66)
             print("  * = Selected as best and tested OOS")
 
+        print("=" * 70)
+
+    # ========================================================================
+    # PARAMETER STABILITY ACROSS SPLITS
+    # ========================================================================
+    if len(param_stability_data) > 0:
+        print("\n" + "=" * 70)
+        print("PARAMETER STABILITY ACROSS SPLITS")
+        print("=" * 70)
+        print("\nTesting ALL parameter combinations on each split's test set")
+        print("(This reveals which parameters are robust across market conditions)")
+        print("-" * 70)
+
+        # Aggregate by parameter combination
+        from collections import defaultdict
+        param_aggregates = defaultdict(lambda: {
+            'test_pfs': [],
+            'test_pnls': [],
+            'count_selected': 0,
+            'splits_profitable': 0,
+            'total_splits': 0
+        })
+
+        for result in param_stability_data:
+            # Create param tuple as key
+            param_tuple = tuple(sorted([(k, v) for k, v in result['params'].items()]))
+
+            # Aggregate data
+            pf = result['test_profit_factor']
+            pnl = result['test_total_pnl_after_costs']
+
+            # Handle inf PF for aggregation
+            pf_value = pf if pf != float('inf') else 999.0
+
+            param_aggregates[param_tuple]['test_pfs'].append(pf_value)
+            param_aggregates[param_tuple]['test_pnls'].append(pnl)
+            param_aggregates[param_tuple]['total_splits'] += 1
+
+            if result['is_best']:
+                param_aggregates[param_tuple]['count_selected'] += 1
+
+            if pnl > 0:
+                param_aggregates[param_tuple]['splits_profitable'] += 1
+
+        # Compute summary statistics for each combo
+        stability_summary = []
+        for param_tuple, data in param_aggregates.items():
+            mean_pf = np.mean(data['test_pfs'])
+            median_pf = np.median(data['test_pfs'])
+            mean_pnl = np.mean(data['test_pnls'])
+            median_pnl = np.median(data['test_pnls'])
+            pct_profitable = (data['splits_profitable'] / data['total_splits'] * 100)
+
+            stability_summary.append({
+                'params': dict(param_tuple),
+                'mean_test_pf': mean_pf,
+                'median_test_pf': median_pf,
+                'mean_test_pnl': mean_pnl,
+                'median_test_pnl': median_pnl,
+                'pct_profitable': pct_profitable,
+                'count_selected': data['count_selected'],
+                'splits_tested': data['total_splits']
+            })
+
+        # Sort by median test PF (descending)
+        stability_summary.sort(key=lambda x: x['median_test_pf'], reverse=True)
+
+        # Print TOP 10 by median test PF
+        print(f"\nTOP 10 PARAMETER COMBINATIONS (by median test PF):")
+        print("-" * 120)
+        print(f"{'Rank':<6} {'Params':<40} {'Med PF':<10} {'Mean PF':<10} {'Med PnL':<12} {'% Profit':<10} {'Selected':<10}")
+        print("-" * 120)
+
+        for rank, item in enumerate(stability_summary[:10], 1):
+            params_str = ', '.join([f"{k}={v}" for k, v in item['params'].items()])
+            med_pf_str = f"{item['median_test_pf']:.2f}" if item['median_test_pf'] < 900 else "Inf"
+            mean_pf_str = f"{item['mean_test_pf']:.2f}" if item['mean_test_pf'] < 900 else "Inf"
+
+            print(f"{rank:<6} {params_str:<40} {med_pf_str:<10} {mean_pf_str:<10} "
+                  f"{item['median_test_pnl']:<12.1f} {item['pct_profitable']:<10.1f} {item['count_selected']:<10}")
+
+        print("-" * 120)
+
+        # Find MOST STABLE combination (highest % profitable, then best median PF)
+        stability_summary_for_stable = sorted(stability_summary,
+                                               key=lambda x: (x['pct_profitable'], x['median_test_pf']),
+                                               reverse=True)
+        most_stable = stability_summary_for_stable[0]
+
+        print(f"\nMOST STABLE PARAMETER COMBINATION:")
+        print("-" * 70)
+        params_str = ', '.join([f"{k}={v}" for k, v in most_stable['params'].items()])
+        print(f"  Parameters: {params_str}")
+        print(f"  % Profitable Splits: {most_stable['pct_profitable']:.1f}%")
+        print(f"  Median Test PF: {most_stable['median_test_pf']:.2f}")
+        print(f"  Mean Test PF: {most_stable['mean_test_pf']:.2f}")
+        print(f"  Median Test PnL: {most_stable['median_test_pnl']:.1f} pips")
+        print(f"  Mean Test PnL: {most_stable['mean_test_pnl']:.1f} pips")
+        print(f"  Selected as Best: {most_stable['count_selected']}/{most_stable['splits_tested']} splits")
+
+        # Interpretation
+        print(f"\n  Interpretation:")
+        if most_stable['pct_profitable'] == 100.0:
+            print(f"    ✓ Excellent: Profitable in 100% of splits")
+        elif most_stable['pct_profitable'] >= 80.0:
+            print(f"    ✓ Good: Profitable in {most_stable['pct_profitable']:.1f}% of splits")
+        elif most_stable['pct_profitable'] >= 60.0:
+            print(f"    ⚠ Moderate: Profitable in {most_stable['pct_profitable']:.1f}% of splits")
+        else:
+            print(f"    ✗ Poor: Profitable in only {most_stable['pct_profitable']:.1f}% of splits")
+
+        if most_stable['median_test_pf'] >= 2.0:
+            print(f"    ✓ Strong: Median PF {most_stable['median_test_pf']:.2f} ≥ 2.0")
+        elif most_stable['median_test_pf'] >= 1.5:
+            print(f"    ✓ Good: Median PF {most_stable['median_test_pf']:.2f} ≥ 1.5")
+        elif most_stable['median_test_pf'] >= 1.0:
+            print(f"    ⚠ Marginal: Median PF {most_stable['median_test_pf']:.2f} barely profitable")
+        else:
+            print(f"    ✗ Poor: Median PF {most_stable['median_test_pf']:.2f} < 1.0 (unprofitable)")
+
+        print("-" * 70)
         print("=" * 70)
 
     return df_results
