@@ -302,6 +302,77 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
     return False
 
 
+def monte_carlo_reshuffle(pnl_list: List[float], observed_max_dd: float, n_simulations: int = 1000) -> Dict:
+    """
+    Monte Carlo simulation: shuffle trade order and assess sequence risk.
+
+    This stress test reveals how much performance depends on trade order:
+    - If median DD >> observed DD → you got lucky with trade order
+    - If P(final PnL < 0) is high → strategy is fragile
+    - If P(DD > observed) is high → observed drawdown is optimistic
+
+    Args:
+        pnl_list: List of trade PnL values (pnl_after_costs) in chronological order
+        observed_max_dd: Observed max drawdown from actual chronological order (pips)
+        n_simulations: Number of Monte Carlo simulations (default: 1000)
+
+    Returns:
+        Dict with Monte Carlo statistics
+    """
+    if len(pnl_list) == 0:
+        return {
+            'mc_median_max_dd': 0.0,
+            'mc_max_max_dd': 0.0,
+            'mc_95th_percentile_dd': 0.0,
+            'mc_prob_loss': 0.0,
+            'mc_prob_dd_exceeds_observed': 0.0
+        }
+
+    # Storage for simulation results
+    max_drawdowns = []
+    final_pnls = []
+
+    # Run N simulations
+    for _ in range(n_simulations):
+        # Shuffle trade order
+        shuffled_pnl = np.random.permutation(pnl_list)
+
+        # Rebuild equity curve
+        equity_curve = np.cumsum(shuffled_pnl)
+
+        # Compute max drawdown
+        peak = equity_curve[0]
+        max_dd = 0.0
+        for value in equity_curve:
+            if value > peak:
+                peak = value
+            dd = peak - value
+            if dd > max_dd:
+                max_dd = dd
+
+        max_drawdowns.append(max_dd)
+        final_pnls.append(equity_curve[-1])
+
+    # Convert to numpy arrays for statistics
+    max_drawdowns = np.array(max_drawdowns)
+    final_pnls = np.array(final_pnls)
+
+    # Compute statistics
+    median_max_dd = np.median(max_drawdowns)
+    max_max_dd = np.max(max_drawdowns)
+    percentile_95_dd = np.percentile(max_drawdowns, 95)
+    prob_loss = np.sum(final_pnls < 0) / n_simulations
+    prob_dd_exceeds_observed = np.sum(max_drawdowns > observed_max_dd) / n_simulations
+
+    return {
+        'mc_median_max_dd': median_max_dd,
+        'mc_max_max_dd': max_max_dd,
+        'mc_95th_percentile_dd': percentile_95_dd,
+        'mc_prob_loss': prob_loss,
+        'mc_prob_dd_exceeds_observed': prob_dd_exceeds_observed
+    }
+
+
 def run_backtest(
         symbol: str = "EURUSD",
         timeframe: str = "H1",
@@ -1222,6 +1293,49 @@ def run_walk_forward(
             print(f"  {'Status':<35} ✗ High degradation (possible overfitting)")
         print("  " + "-" * 60)
 
+        # Monte Carlo trade order reshuffle stress test
+        print(f"\n[MONTE CARLO] Trade Order Reshuffle (N=1000 simulations):")
+        print("  " + "-" * 60)
+
+        test_trades = test_result.get('trades', [])
+        if len(test_trades) > 0:
+            # Extract PnL values in chronological order
+            pnl_list = [trade.pnl_after_costs for trade in test_trades]
+            observed_dd = test_result['max_drawdown']
+
+            # Run Monte Carlo simulation
+            mc_results = monte_carlo_reshuffle(pnl_list, observed_dd, n_simulations=1000)
+
+            print(f"  {'Observed Max DD':<35} {observed_dd:.2f} pips")
+            print(f"  {'MC Median Max DD':<35} {mc_results['mc_median_max_dd']:.2f} pips")
+            print(f"  {'MC 95th Percentile DD':<35} {mc_results['mc_95th_percentile_dd']:.2f} pips")
+            print(f"  {'MC Maximum DD':<35} {mc_results['mc_max_max_dd']:.2f} pips")
+            print(f"  {'P(final PnL < 0)':<35} {mc_results['mc_prob_loss']*100:.1f}%")
+            print(f"  {'P(DD > observed)':<35} {mc_results['mc_prob_dd_exceeds_observed']*100:.1f}%")
+
+            # Interpretation
+            dd_ratio = observed_dd / mc_results['mc_median_max_dd'] if mc_results['mc_median_max_dd'] > 0 else 1.0
+            if dd_ratio < 0.8:
+                print(f"  {'Interpretation':<35} ✓ Lucky sequence (obs < median)")
+            elif dd_ratio > 1.2:
+                print(f"  {'Interpretation':<35} ⚠ Unlucky sequence (obs > median)")
+            else:
+                print(f"  {'Interpretation':<35} ~ Typical sequence")
+
+            if mc_results['mc_prob_loss'] > 0.3:
+                print(f"  {'Risk Warning':<35} ⚠ High loss probability ({mc_results['mc_prob_loss']*100:.1f}%)")
+        else:
+            print(f"  {'Status':<35} No trades to analyze")
+            mc_results = {
+                'mc_median_max_dd': 0.0,
+                'mc_max_max_dd': 0.0,
+                'mc_95th_percentile_dd': 0.0,
+                'mc_prob_loss': 0.0,
+                'mc_prob_dd_exceeds_observed': 0.0
+            }
+
+        print("  " + "-" * 60)
+
         # Store split results
         split_result = {
             'split': split_idx + 1,
@@ -1262,7 +1376,13 @@ def run_walk_forward(
             # Degradation metrics (overfitting detection)
             'train_expected_payoff_pips': best_params['expected_payoff_pips'],
             'pf_degradation': test_result['profit_factor'] / max(best_params['profit_factor'], 1e-9),
-            'expected_payoff_degradation': test_result['expected_payoff_pips'] / max(best_params['expected_payoff_pips'], 1e-9) if best_params['expected_payoff_pips'] > 0 else (0.0 if test_result['expected_payoff_pips'] <= 0 else float('inf'))
+            'expected_payoff_degradation': test_result['expected_payoff_pips'] / max(best_params['expected_payoff_pips'], 1e-9) if best_params['expected_payoff_pips'] > 0 else (0.0 if test_result['expected_payoff_pips'] <= 0 else float('inf')),
+            # Monte Carlo metrics (sequence risk)
+            'mc_median_max_dd': mc_results['mc_median_max_dd'],
+            'mc_max_max_dd': mc_results['mc_max_max_dd'],
+            'mc_95th_percentile_dd': mc_results['mc_95th_percentile_dd'],
+            'mc_prob_loss': mc_results['mc_prob_loss'],
+            'mc_prob_dd_exceeds_observed': mc_results['mc_prob_dd_exceeds_observed']
         }
 
         split_results.append(split_result)
@@ -1372,6 +1492,52 @@ def run_walk_forward(
 
     if worst_pf_degradation < 0.5:
         print(f"  ⚠ Warning: Worst split degradation {worst_pf_degradation:.2f} < 0.5 (severe degradation in split {worst_pf_split:.0f})")
+
+    print("=" * 70)
+
+    # Monte Carlo sequence risk analysis
+    print("\n" + "=" * 70)
+    print("MONTE CARLO ANALYSIS - Sequence Risk (Trade Order Reshuffle)")
+    print("=" * 70)
+
+    # Aggregate MC statistics across splits
+    mc_median_dd_avg = df_results['mc_median_max_dd'].mean()
+    mc_95th_dd_avg = df_results['mc_95th_percentile_dd'].mean()
+    mc_max_dd_worst = df_results['mc_max_max_dd'].max()
+    mc_prob_loss_avg = df_results['mc_prob_loss'].mean()
+    mc_prob_dd_exceeds_avg = df_results['mc_prob_dd_exceeds_observed'].mean()
+
+    # Observed vs MC comparison
+    observed_dd_avg = df_results['test_max_drawdown'].mean()
+    dd_ratio = observed_dd_avg / mc_median_dd_avg if mc_median_dd_avg > 0 else 1.0
+
+    print(f"\nDrawdown Statistics (averaged across splits):")
+    print(f"{'Observed Avg Max DD':<40} {observed_dd_avg:.2f} pips")
+    print(f"{'MC Median Max DD':<40} {mc_median_dd_avg:.2f} pips")
+    print(f"{'MC 95th Percentile DD':<40} {mc_95th_dd_avg:.2f} pips")
+    print(f"{'MC Maximum DD (worst split)':<40} {mc_max_dd_worst:.2f} pips")
+
+    print(f"\nSequence Risk:")
+    print(f"{'Avg P(final PnL < 0)':<40} {mc_prob_loss_avg*100:.1f}%")
+    print(f"{'Avg P(DD > observed)':<40} {mc_prob_dd_exceeds_avg*100:.1f}%")
+
+    print(f"\nInterpretation:")
+    if dd_ratio < 0.8:
+        print(f"  ✓ Lucky: Observed DD {dd_ratio:.2f}x median (got favorable trade order)")
+    elif dd_ratio > 1.2:
+        print(f"  ⚠ Unlucky: Observed DD {dd_ratio:.2f}x median (got unfavorable trade order)")
+    else:
+        print(f"  ~ Typical: Observed DD {dd_ratio:.2f}x median (trade order not extreme)")
+
+    if mc_prob_loss_avg > 0.4:
+        print(f"  ✗ High Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
+    elif mc_prob_loss_avg > 0.2:
+        print(f"  ⚠ Moderate Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
+    else:
+        print(f"  ✓ Low Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
+
+    if mc_prob_dd_exceeds_avg > 0.7:
+        print(f"  ⚠ Optimistic DD: {mc_prob_dd_exceeds_avg*100:.1f}% chance of worse drawdown")
 
     print("=" * 70)
 
