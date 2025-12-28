@@ -1163,11 +1163,26 @@ def run_walk_forward(
             print(f"\n✗ Test backtest failed: {test_result.get('error', 'Unknown error')}")
             continue
 
-        print(f"\n[TEST] Results:")
-        print(f"  Test PF: {test_result['profit_factor']:.2f}")
-        print(f"  Test Trades: {test_result['total_trades']}")
-        print(f"  Test PnL: {test_result['total_pnl_after_costs']:.1f} pips")
-        print(f"  Test Win Rate: {test_result['win_rate']:.1f}%")
+        # Print compact MT5-style test results block
+        print(f"\n[TEST] Results - MT5 Style Report:")
+        print("  " + "-" * 60)
+        pf_str = f"{test_result['profit_factor']:.2f}" if test_result['profit_factor'] != float('inf') else "Inf"
+        print(f"  {'Trades':<35} {test_result['total_trades']:>10}")
+        print(f"  {'Profit trades (% of total)':<35} {test_result['winning_trades']:>6} ({test_result['profit_trades_pct']:.1f}%)")
+        print(f"  {'  Long (won %)':<35} {test_result['trade_count_long']:>6} ({test_result['win_rate_long']:.1f}%)")
+        print(f"  {'  Short (won %)':<35} {test_result['trade_count_short']:>6} ({test_result['win_rate_short']:.1f}%)")
+        print(f"  {'Gross Profit':<35} {test_result['gross_profit_pips']:>10.2f} pips")
+        print(f"  {'Gross Loss':<35} {test_result['gross_loss_pips']:>10.2f} pips")
+        print(f"  {'Total Net Profit':<35} {test_result['total_pnl_after_costs']:>10.2f} pips")
+        print(f"  {'Profit Factor':<35} {pf_str:>10}")
+        print(f"  {'Expected Payoff':<35} {test_result['expected_payoff_pips']:>10.2f} pips")
+        print(f"  {'Recovery Factor':<35} {test_result['recovery_factor']:>10.2f}")
+        print(f"  {'Max Drawdown':<35} {test_result['max_drawdown']:>10.2f} pips ({test_result['max_drawdown_pct']:.2f}%)")
+        print(f"  {'Largest profit trade':<35} {test_result['largest_win_pips']:>10.2f} pips")
+        print(f"  {'Largest loss trade':<35} {test_result['largest_loss_pips']:>10.2f} pips")
+        print(f"  {'Average profit trade':<35} {test_result['avg_win_pips']:>10.2f} pips")
+        print(f"  {'Average loss trade':<35} {test_result['avg_loss_pips']:>10.2f} pips")
+        print("  " + "-" * 60)
 
         # Store split results
         split_result = {
@@ -1178,18 +1193,34 @@ def run_walk_forward(
             'test_end': df_full.iloc[test_end - 1]['time'],
             # Best params
             **{f'param_{k}': v for k, v in test_param_dict.items()},
-            # Train metrics
+            # Train metrics (basic)
             'train_profit_factor': best_params['profit_factor'],
             'train_total_trades': best_params['total_trades'],
             'train_win_rate': best_params['win_rate'],
             'train_total_pnl_after_costs': best_params['total_pnl_after_costs'],
             'train_max_drawdown': best_params['max_drawdown'],
-            # Test metrics
+            # Test metrics (comprehensive)
             'test_profit_factor': test_result['profit_factor'],
             'test_total_trades': test_result['total_trades'],
+            'test_winning_trades': test_result['winning_trades'],
+            'test_losing_trades': test_result['losing_trades'],
             'test_win_rate': test_result['win_rate'],
+            'test_profit_trades_pct': test_result['profit_trades_pct'],
             'test_total_pnl_after_costs': test_result['total_pnl_after_costs'],
-            'test_max_drawdown': test_result['max_drawdown']
+            'test_gross_profit_pips': test_result['gross_profit_pips'],
+            'test_gross_loss_pips': test_result['gross_loss_pips'],
+            'test_expected_payoff_pips': test_result['expected_payoff_pips'],
+            'test_max_drawdown': test_result['max_drawdown'],
+            'test_max_drawdown_pct': test_result['max_drawdown_pct'],
+            'test_recovery_factor': test_result['recovery_factor'],
+            'test_avg_win_pips': test_result['avg_win_pips'],
+            'test_avg_loss_pips': test_result['avg_loss_pips'],
+            'test_largest_win_pips': test_result['largest_win_pips'],
+            'test_largest_loss_pips': test_result['largest_loss_pips'],
+            'test_trade_count_long': test_result['trade_count_long'],
+            'test_trade_count_short': test_result['trade_count_short'],
+            'test_win_rate_long': test_result['win_rate_long'],
+            'test_win_rate_short': test_result['win_rate_short']
         }
 
         split_results.append(split_result)
@@ -1206,15 +1237,59 @@ def run_walk_forward(
     print("WALK-FORWARD SUMMARY - TEST RESULTS ONLY")
     print("=" * 70)
     print(f"\nCompleted splits: {len(df_results)}/{splits}")
-    print(f"\nAggregate test metrics:")
-    print(f"  Mean Profit Factor: {df_results['test_profit_factor'].mean():.2f}")
-    print(f"  Median Profit Factor: {df_results['test_profit_factor'].median():.2f}")
-    print(f"  Total Test Trades: {df_results['test_total_trades'].sum():.0f}")
-    print(f"  Mean Win Rate: {df_results['test_win_rate'].mean():.1f}%")
-    print(f"  Total PnL (after costs): {df_results['test_total_pnl_after_costs'].sum():.1f} pips")
-    print(f"  Mean PnL per split: {df_results['test_total_pnl_after_costs'].mean():.1f} pips")
-    print(f"  Max Drawdown (worst): {df_results['test_max_drawdown'].max():.1f} pips")
-    print(f"  Profitable splits: {(df_results['test_total_pnl_after_costs'] > 0).sum()}/{len(df_results)}")
+
+    print(f"\n{'AGGREGATE TEST METRICS'}")
+    print("-" * 70)
+
+    # Trade statistics
+    total_test_trades = df_results['test_total_trades'].sum()
+    total_winning = df_results['test_winning_trades'].sum()
+    total_losing = df_results['test_losing_trades'].sum()
+    aggregate_win_rate = (total_winning / total_test_trades * 100) if total_test_trades > 0 else 0.0
+
+    print(f"{'Total trades across all splits':<40} {total_test_trades:.0f}")
+    print(f"{'  Winning trades':<40} {total_winning:.0f} ({aggregate_win_rate:.1f}%)")
+    print(f"{'  Losing trades':<40} {total_losing:.0f} ({100-aggregate_win_rate:.1f}%)")
+
+    # Profitability
+    total_gross_profit = df_results['test_gross_profit_pips'].sum()
+    total_gross_loss = df_results['test_gross_loss_pips'].sum()
+    aggregate_pf = total_gross_profit / total_gross_loss if total_gross_loss > 0 else float('inf')
+    pf_str = f"{aggregate_pf:.2f}" if aggregate_pf != float('inf') else "Inf"
+
+    print(f"\n{'Total Gross Profit':<40} {total_gross_profit:.2f} pips")
+    print(f"{'Total Gross Loss':<40} {total_gross_loss:.2f} pips")
+    print(f"{'Total Net PnL (after costs)':<40} {df_results['test_total_pnl_after_costs'].sum():.2f} pips")
+    print(f"{'Aggregate Profit Factor':<40} {pf_str}")
+    print(f"{'Mean Expected Payoff':<40} {df_results['test_expected_payoff_pips'].mean():.2f} pips")
+
+    # Per-split statistics
+    print(f"\n{'Mean Profit Factor (per split)':<40} {df_results['test_profit_factor'].mean():.2f}")
+    print(f"{'Median Profit Factor (per split)':<40} {df_results['test_profit_factor'].median():.2f}")
+    print(f"{'Mean PnL per split':<40} {df_results['test_total_pnl_after_costs'].mean():.2f} pips")
+
+    # Risk metrics
+    print(f"\n{'Max Drawdown (worst split)':<40} {df_results['test_max_drawdown'].max():.2f} pips ({df_results['test_max_drawdown_pct'].max():.2f}%)")
+    print(f"{'Mean Recovery Factor':<40} {df_results['test_recovery_factor'].mean():.2f}")
+
+    # Win/Loss statistics
+    print(f"\n{'Mean Avg Win':<40} {df_results['test_avg_win_pips'].mean():.2f} pips")
+    print(f"{'Mean Avg Loss':<40} {df_results['test_avg_loss_pips'].mean():.2f} pips")
+    print(f"{'Largest Win (across splits)':<40} {df_results['test_largest_win_pips'].max():.2f} pips")
+    print(f"{'Largest Loss (across splits)':<40} {df_results['test_largest_loss_pips'].max():.2f} pips")
+
+    # Direction breakdown
+    total_long = df_results['test_trade_count_long'].sum()
+    total_short = df_results['test_trade_count_short'].sum()
+    print(f"\n{'Total Long trades':<40} {total_long:.0f}")
+    print(f"{'Total Short trades':<40} {total_short:.0f}")
+    print(f"{'Mean Win Rate Long':<40} {df_results['test_win_rate_long'].mean():.1f}%")
+    print(f"{'Mean Win Rate Short':<40} {df_results['test_win_rate_short'].mean():.1f}%")
+
+    # Overall performance
+    profitable_splits = (df_results['test_total_pnl_after_costs'] > 0).sum()
+    print(f"\n{'Profitable splits':<40} {profitable_splits}/{len(df_results)} ({profitable_splits/len(df_results)*100:.1f}%)")
+
     print("=" * 70)
 
     return df_results
