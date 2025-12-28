@@ -31,7 +31,8 @@ class Trade:
     """Represents a single trade with realistic SL/TP management and costs."""
 
     def __init__(self, entry_time, direction, entry, sl, tp1, tp2, tp3,
-                 spread_pips=0.0, slippage_pips=0.0, commission_per_lot=0.0, lot_size=1.0):
+                 pip_value, spread_pips=0.0, slippage_pips=0.0,
+                 commission_per_side_per_lot=0.0, lot_size=1.0):
         self.entry_time = entry_time
         self.direction = direction
         self.entry_raw = entry
@@ -48,13 +49,13 @@ class Trade:
         self.exit_reason = ""
 
         # Cost parameters
+        self.pip_value = pip_value
         self.spread_pips = spread_pips
         self.slippage_pips = slippage_pips
-        self.commission_per_lot = commission_per_lot
+        self.commission_per_side_per_lot = commission_per_side_per_lot
         self.lot_size = lot_size
 
         # Apply entry costs
-        pip_value = 0.0001  # Default for EURUSD
         if direction == "BUY":
             # Entry: pay spread + slippage
             self.entry = entry + (spread_pips / 2 + slippage_pips) * pip_value
@@ -62,24 +63,46 @@ class Trade:
             # Entry: pay spread + slippage
             self.entry = entry - (spread_pips / 2 + slippage_pips) * pip_value
 
-        # Entry commission
-        self.entry_commission = commission_per_lot * lot_size
+        # Entry commission (1 side)
+        self.entry_commission = commission_per_side_per_lot * lot_size
 
 
-def apply_exit_costs(trade: Trade, exit_price: float, pip_value: float) -> float:
+def apply_exit_costs(trade: Trade, exit_price: float) -> float:
     """Apply exit costs (spread, slippage) to exit price."""
     if trade.direction == "BUY":
         # Exit BUY: sell at bid (lose spread + slippage)
-        return exit_price - (trade.spread_pips / 2 + trade.slippage_pips) * pip_value
+        return exit_price - (trade.spread_pips / 2 + trade.slippage_pips) * trade.pip_value
     else:  # SELL
         # Exit SELL: buy at ask (pay spread + slippage)
-        return exit_price + (trade.spread_pips / 2 + trade.slippage_pips) * pip_value
+        return exit_price + (trade.spread_pips / 2 + trade.slippage_pips) * trade.pip_value
 
 
-def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
+def commission_usd_to_pips(commission_usd: float, lot_size: float, usd_per_pip_per_lot: float) -> float:
+    """
+    Convert USD commission to pips.
+
+    Args:
+        commission_usd: Commission in USD
+        lot_size: Position size in lots
+        usd_per_pip_per_lot: USD value per pip per lot (default ~10.0 for EURUSD)
+
+    Returns:
+        Commission in pips
+    """
+    if lot_size == 0 or usd_per_pip_per_lot == 0:
+        return 0.0
+    return commission_usd / (usd_per_pip_per_lot * lot_size)
+
+
+def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float) -> bool:
     """
     Check if trade hits SL or TP on current bar.
     Applies realistic costs on exit.
+
+    Args:
+        trade: Trade instance
+        bar: Current bar data
+        usd_per_pip_per_lot: USD value per pip per lot for commission conversion
 
     Returns:
         True if trade is closed
@@ -89,20 +112,21 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
         if bar['low'] <= trade.sl:
             trade.status = "loss"
             trade.exit_time = bar['time']
-            exit_price_after_costs = apply_exit_costs(trade, trade.sl, pip_value)
+            exit_price_after_costs = apply_exit_costs(trade, trade.sl)
             trade.exit_price = exit_price_after_costs
-            trade.pnl_pips = (exit_price_after_costs - trade.entry) / pip_value
-            trade.pnl = trade.pnl_pips / ((trade.entry - trade.sl) / pip_value)  # In R
+            trade.pnl_pips = (exit_price_after_costs - trade.entry) / trade.pip_value
+            trade.pnl = trade.pnl_pips / ((trade.entry - trade.sl) / trade.pip_value)  # In R
 
-            # Subtract commission
-            exit_commission = trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + exit (1 side) = 2 sides total
+            exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
             trade.exit_reason = "SL hit"
             return True
 
         # Check TP levels (assume partial closes)
-        r_pips = (trade.entry - trade.sl) / pip_value
+        r_pips = (trade.entry - trade.sl) / trade.pip_value
 
         if bar['high'] >= trade.tp3:
             # All TPs hit
@@ -110,21 +134,22 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
             trade.exit_time = bar['time']
 
             # Calculate weighted PnL with costs
-            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
-            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
-            tp3_exit = apply_exit_costs(trade, trade.tp3, pip_value)
+            tp1_exit = apply_exit_costs(trade, trade.tp1)
+            tp2_exit = apply_exit_costs(trade, trade.tp2)
+            tp3_exit = apply_exit_costs(trade, trade.tp3)
 
-            tp1_pips = (tp1_exit - trade.entry) / pip_value
-            tp2_pips = (tp2_exit - trade.entry) / pip_value
-            tp3_pips = (tp3_exit - trade.entry) / pip_value
+            tp1_pips = (tp1_exit - trade.entry) / trade.pip_value
+            tp2_pips = (tp2_exit - trade.entry) / trade.pip_value
+            tp3_pips = (tp3_exit - trade.entry) / trade.pip_value
 
             weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips + 0.2 * tp3_pips
             trade.pnl_pips = weighted_pips
             trade.pnl = weighted_pips / r_pips
 
-            # Commission (3 exits)
-            exit_commission = 3 * trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + 3 exit sides (TP1 + TP2 + TP3) = 4 sides total
+            exit_commission_usd = 3 * trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp3_exit
@@ -136,19 +161,20 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
             trade.status = "win"
             trade.exit_time = bar['time']
 
-            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
-            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
+            tp1_exit = apply_exit_costs(trade, trade.tp1)
+            tp2_exit = apply_exit_costs(trade, trade.tp2)
 
-            tp1_pips = (tp1_exit - trade.entry) / pip_value
-            tp2_pips = (tp2_exit - trade.entry) / pip_value
+            tp1_pips = (tp1_exit - trade.entry) / trade.pip_value
+            tp2_pips = (tp2_exit - trade.entry) / trade.pip_value
 
             weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips + 0.2 * 0  # TP3 not hit
             trade.pnl_pips = weighted_pips
             trade.pnl = weighted_pips / r_pips
 
-            # Commission (2 exits)
-            exit_commission = 2 * trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + 2 exit sides (TP1 + TP2) = 3 sides total
+            exit_commission_usd = 2 * trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp2_exit
@@ -160,16 +186,17 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
             trade.status = "win"
             trade.exit_time = bar['time']
 
-            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
-            tp1_pips = (tp1_exit - trade.entry) / pip_value
+            tp1_exit = apply_exit_costs(trade, trade.tp1)
+            tp1_pips = (tp1_exit - trade.entry) / trade.pip_value
 
             weighted_pips = 0.5 * tp1_pips
             trade.pnl_pips = weighted_pips
             trade.pnl = weighted_pips / r_pips
 
-            # Commission (1 exit)
-            exit_commission = trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + 1 exit side (TP1) = 2 sides total
+            exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp1_exit
@@ -181,39 +208,42 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
         if bar['high'] >= trade.sl:
             trade.status = "loss"
             trade.exit_time = bar['time']
-            exit_price_after_costs = apply_exit_costs(trade, trade.sl, pip_value)
+            exit_price_after_costs = apply_exit_costs(trade, trade.sl)
             trade.exit_price = exit_price_after_costs
-            trade.pnl_pips = (trade.entry - exit_price_after_costs) / pip_value
-            trade.pnl = trade.pnl_pips / ((trade.sl - trade.entry) / pip_value)
+            trade.pnl_pips = (trade.entry - exit_price_after_costs) / trade.pip_value
+            trade.pnl = trade.pnl_pips / ((trade.sl - trade.entry) / trade.pip_value)
 
-            # Commission
-            exit_commission = trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + exit (1 side) = 2 sides total
+            exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
             trade.exit_reason = "SL hit"
             return True
 
         # Check TP levels
-        r_pips = (trade.sl - trade.entry) / pip_value
+        r_pips = (trade.sl - trade.entry) / trade.pip_value
 
         if bar['low'] <= trade.tp3:
             trade.status = "win"
             trade.exit_time = bar['time']
 
-            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
-            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
-            tp3_exit = apply_exit_costs(trade, trade.tp3, pip_value)
+            tp1_exit = apply_exit_costs(trade, trade.tp1)
+            tp2_exit = apply_exit_costs(trade, trade.tp2)
+            tp3_exit = apply_exit_costs(trade, trade.tp3)
 
-            tp1_pips = (trade.entry - tp1_exit) / pip_value
-            tp2_pips = (trade.entry - tp2_exit) / pip_value
-            tp3_pips = (trade.entry - tp3_exit) / pip_value
+            tp1_pips = (trade.entry - tp1_exit) / trade.pip_value
+            tp2_pips = (trade.entry - tp2_exit) / trade.pip_value
+            tp3_pips = (trade.entry - tp3_exit) / trade.pip_value
 
             weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips + 0.2 * tp3_pips
             trade.pnl_pips = weighted_pips
             trade.pnl = weighted_pips / r_pips
 
-            exit_commission = 3 * trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + 3 exit sides (TP1 + TP2 + TP3) = 4 sides total
+            exit_commission_usd = 3 * trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp3_exit
@@ -224,18 +254,20 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
             trade.status = "win"
             trade.exit_time = bar['time']
 
-            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
-            tp2_exit = apply_exit_costs(trade, trade.tp2, pip_value)
+            tp1_exit = apply_exit_costs(trade, trade.tp1)
+            tp2_exit = apply_exit_costs(trade, trade.tp2)
 
-            tp1_pips = (trade.entry - tp1_exit) / pip_value
-            tp2_pips = (trade.entry - tp2_exit) / pip_value
+            tp1_pips = (trade.entry - tp1_exit) / trade.pip_value
+            tp2_pips = (trade.entry - tp2_exit) / trade.pip_value
 
             weighted_pips = 0.5 * tp1_pips + 0.3 * tp2_pips
             trade.pnl_pips = weighted_pips
             trade.pnl = weighted_pips / r_pips
 
-            exit_commission = 2 * trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + 2 exit sides (TP1 + TP2) = 3 sides total
+            exit_commission_usd = 2 * trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp2_exit
@@ -246,15 +278,17 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, pip_value: float) -> bool:
             trade.status = "win"
             trade.exit_time = bar['time']
 
-            tp1_exit = apply_exit_costs(trade, trade.tp1, pip_value)
-            tp1_pips = (trade.entry - tp1_exit) / pip_value
+            tp1_exit = apply_exit_costs(trade, trade.tp1)
+            tp1_pips = (trade.entry - tp1_exit) / trade.pip_value
 
             weighted_pips = 0.5 * tp1_pips
             trade.pnl_pips = weighted_pips
             trade.pnl = weighted_pips / r_pips
 
-            exit_commission = trade.commission_per_lot * trade.lot_size
-            total_commission_pips = (trade.entry_commission + exit_commission) / (pip_value * trade.lot_size * 100000)
+            # Commission: entry (1 side) + 1 exit side (TP1) = 2 sides total
+            exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
+            total_commission_usd = trade.entry_commission + exit_commission_usd
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp1_exit
@@ -271,12 +305,14 @@ def run_backtest(
         lookback_bars: int = 400,
         # Cost parameters
         spread_pips: float = 1.0,
-        commission_per_lot: float = 7.0,
+        commission_per_side_per_lot: float = 7.0,
         slippage_pips: float = 0.5,
         lot_size: float = 1.0,
+        usd_per_pip_per_lot: float = 10.0,
         # Filter parameters
         min_confidence: Optional[float] = None,
         broken_level_cooldown_hours: Optional[float] = None,
+        broken_level_break_pips: float = 15.0,
         enable_confidence_filter: bool = True,
         enable_broken_level_filter: bool = True,
         # Display
@@ -291,11 +327,13 @@ def run_backtest(
         bars: Number of historical bars to test
         lookback_bars: Bars needed for indicator calculation
         spread_pips: Spread in pips
-        commission_per_lot: Commission per lot (round trip)
+        commission_per_side_per_lot: Commission per side per lot in USD
         slippage_pips: Slippage in pips
         lot_size: Lot size for position sizing
+        usd_per_pip_per_lot: USD value per pip per lot (for commission conversion)
         min_confidence: Minimum confidence threshold (None = no filter)
         broken_level_cooldown_hours: Hours to block broken levels (None = no filter)
+        broken_level_break_pips: Pips beyond level to mark as broken
         enable_confidence_filter: Enable confidence filtering
         enable_broken_level_filter: Enable broken level filtering
         verbose: Print detailed output
@@ -314,12 +352,17 @@ def run_backtest(
         print(f"Lookback: {lookback_bars}")
         print(f"\nCosts:")
         print(f"  Spread: {spread_pips} pips")
-        print(f"  Commission: ${commission_per_lot} per lot")
+        print(f"  Commission: ${commission_per_side_per_lot} per side per lot")
         print(f"  Slippage: {slippage_pips} pips")
         print(f"  Lot Size: {lot_size}")
+        print(f"  USD per pip per lot: ${usd_per_pip_per_lot}")
         print(f"\nFilters:")
         print(f"  Min Confidence: {min_confidence if enable_confidence_filter else 'OFF'}")
-        print(f"  Broken Level Cooldown: {broken_level_cooldown_hours}h" if enable_broken_level_filter else "  Broken Level Filter: OFF")
+        if enable_broken_level_filter:
+            print(f"  Broken Level Cooldown: {broken_level_cooldown_hours}h")
+            print(f"  Broken Level Threshold: {broken_level_break_pips} pips")
+        else:
+            print("  Broken Level Filter: OFF")
         print("=" * 70)
 
     # Connect to MT5
@@ -376,7 +419,7 @@ def run_backtest(
 
         # Update open trade
         if open_trade:
-            if check_trade_outcome(open_trade, current_bar, pip_value):
+            if check_trade_outcome(open_trade, current_bar, usd_per_pip_per_lot):
                 trades.append(open_trade)
                 open_trade = None
 
@@ -392,7 +435,23 @@ def run_backtest(
             )
 
             if levels:
-                # Apply broken level filter
+                # Mark broken levels on current bar (check ALL levels on EVERY bar)
+                if enable_broken_level_filter:
+                    for level_dict in levels:
+                        level_price = round(level_dict['level'], 5)
+                        level_type = level_dict['type']  # 'support' or 'resistance'
+
+                        # Check if level was broken by current bar close
+                        if level_type == 'support':
+                            if current_bar['close'] < (level_price - broken_level_break_pips * pip_value):
+                                # Support broken, mark it
+                                broken_levels[level_price] = (current_time, level_type)
+                        elif level_type == 'resistance':
+                            if current_bar['close'] > (level_price + broken_level_break_pips * pip_value):
+                                # Resistance broken, mark it
+                                broken_levels[level_price] = (current_time, level_type)
+
+                # Apply broken level filter (remove levels in cooldown)
                 if enable_broken_level_filter and broken_level_cooldown_hours:
                     valid_levels = []
                     for level_dict in levels:
@@ -448,17 +507,6 @@ def run_backtest(
                             pip_value=pip_value
                         )
 
-                        # Mark level as broken if price closed through it
-                        if enable_broken_level_filter:
-                            level_price = round(rejection['level'], 5)
-                            level_type = 'support' if direction == 'BUY' else 'resistance'
-
-                            # Check if level was broken
-                            if level_type == 'support' and current_bar['close'] < (rejection['level'] - 15 * pip_value):
-                                broken_levels[level_price] = (current_time, level_type)
-                            elif level_type == 'resistance' and current_bar['close'] > (rejection['level'] + 15 * pip_value):
-                                broken_levels[level_price] = (current_time, level_type)
-
                         # Create trade (enter on next bar open)
                         next_bar_idx = i + 1
                         if next_bar_idx < len(df):
@@ -471,9 +519,10 @@ def run_backtest(
                                 tp1=trade_params['tp1'],
                                 tp2=trade_params['tp2'],
                                 tp3=trade_params['tp3'],
+                                pip_value=pip_value,
                                 spread_pips=spread_pips,
                                 slippage_pips=slippage_pips,
-                                commission_per_lot=commission_per_lot,
+                                commission_per_side_per_lot=commission_per_side_per_lot,
                                 lot_size=lot_size
                             )
                     else:
@@ -586,8 +635,9 @@ def run_grid_search(
         bars: int = 500,
         lookback_bars: int = 400,
         spread_pips: float = 1.0,
-        commission_per_lot: float = 7.0,
-        slippage_pips: float = 0.5
+        commission_per_side_per_lot: float = 7.0,
+        slippage_pips: float = 0.5,
+        usd_per_pip_per_lot: float = 10.0
 ) -> pd.DataFrame:
     """
     Run grid search over parameter combinations.
@@ -595,7 +645,7 @@ def run_grid_search(
     Args:
         param_grid: Dict with parameter names as keys and list of values to test
         symbol, timeframe, bars, lookback_bars: Backtest settings
-        spread_pips, commission_per_lot, slippage_pips: Cost settings
+        spread_pips, commission_per_side_per_lot, slippage_pips, usd_per_pip_per_lot: Cost settings
 
     Returns:
         DataFrame with results sorted by profit factor
@@ -630,10 +680,12 @@ def run_grid_search(
             bars=bars,
             lookback_bars=lookback_bars,
             spread_pips=spread_pips,
-            commission_per_lot=commission_per_lot,
+            commission_per_side_per_lot=commission_per_side_per_lot,
             slippage_pips=slippage_pips,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
             min_confidence=params.get('min_confidence'),
             broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
+            broken_level_break_pips=params.get('broken_level_break_pips', 15.0),
             enable_confidence_filter='min_confidence' in params,
             enable_broken_level_filter='broken_level_cooldown_hours' in params,
             verbose=False
@@ -669,10 +721,12 @@ if __name__ == "__main__":
         bars=500,
         lookback_bars=400,
         spread_pips=1.5,
-        commission_per_lot=7.0,
+        commission_per_side_per_lot=7.0,
         slippage_pips=0.5,
+        usd_per_pip_per_lot=10.0,
         min_confidence=0.65,
         broken_level_cooldown_hours=24.0,
+        broken_level_break_pips=15.0,
         verbose=True
     )
 
@@ -690,8 +744,9 @@ if __name__ == "__main__":
         bars=500,
         lookback_bars=400,
         spread_pips=1.5,
-        commission_per_lot=7.0,
-        slippage_pips=0.5
+        commission_per_side_per_lot=7.0,
+        slippage_pips=0.5,
+        usd_per_pip_per_lot=10.0
     )
 
     # Display top 10 results
