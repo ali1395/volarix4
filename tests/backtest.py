@@ -328,6 +328,14 @@ def run_backtest(
     """
     Run realistic bar-by-bar backtest with costs and parameter filters.
 
+    IMPORTANT - Sign-Based vs Status-Based Categorization:
+        - "Profitable deal" = pnl_after_costs > 0 (actual money made)
+        - "Loss deal" = pnl_after_costs < 0 (actual money lost)
+        - A trade can hit TP1 (status="win") but LOSE money after costs
+        - Example: TP1 = +10 pips, but costs = 12 pips → status="win" but pnl=-2 pips
+        - All metrics use SIGN-BASED categorization (not status-based)
+        - This matches real MT5 Strategy Tester reporting
+
     Args:
         symbol: Trading pair
         timeframe: Timeframe
@@ -598,35 +606,38 @@ def run_backtest(
             "trades": []
         }
 
-    winning_trades = [t for t in completed_trades if t.status == "win"]
-    losing_trades = [t for t in completed_trades if t.status == "loss"]
+    # SIGN-BASED CATEGORIZATION (not status-based)
+    # A trade is "profitable" if pnl_after_costs > 0, regardless of hitting TP
+    # A trade can hit TP1 (status="win") but lose money after costs → not profitable
+    profit_deals = [t for t in completed_trades if t.pnl_after_costs > 0]
+    loss_deals = [t for t in completed_trades if t.pnl_after_costs < 0]
 
-    # Basic counts and rates
-    win_rate = (len(winning_trades) / total_trades) * 100
+    # Basic counts and rates (sign-based)
+    win_rate = (len(profit_deals) / total_trades) * 100
     accuracy = win_rate  # Same as win_rate
     profit_trades_pct = win_rate
     loss_trades_pct = 100.0 - win_rate
 
-    # P&L metrics
+    # P&L metrics (sign-based)
     total_pnl_pips = sum([t.pnl_pips for t in completed_trades])
     total_pnl_after_costs = sum([t.pnl_after_costs for t in completed_trades])
 
-    gross_profit_pips = sum([t.pnl_after_costs for t in winning_trades]) if winning_trades else 0.0
-    gross_loss_pips = abs(sum([t.pnl_after_costs for t in losing_trades])) if losing_trades else 0.0
+    gross_profit_pips = sum([t.pnl_after_costs for t in profit_deals]) if profit_deals else 0.0
+    gross_loss_pips = abs(sum([t.pnl_after_costs for t in loss_deals])) if loss_deals else 0.0
     profit_factor = gross_profit_pips / gross_loss_pips if gross_loss_pips > 0 else float('inf')
 
     expected_payoff_pips = total_pnl_after_costs / total_trades
 
-    # Win/Loss metrics
-    avg_win_pips = gross_profit_pips / len(winning_trades) if winning_trades else 0.0
-    avg_loss_pips = gross_loss_pips / len(losing_trades) if losing_trades else 0.0
+    # Win/Loss metrics (sign-based)
+    avg_win_pips = gross_profit_pips / len(profit_deals) if profit_deals else 0.0
+    avg_loss_pips = gross_loss_pips / len(loss_deals) if loss_deals else 0.0
     avg_win = avg_win_pips  # Alias for compatibility
     avg_loss = avg_loss_pips  # Alias for compatibility
 
-    largest_win_pips = max([t.pnl_after_costs for t in winning_trades]) if winning_trades else 0.0
-    largest_loss_pips = abs(min([t.pnl_after_costs for t in losing_trades])) if losing_trades else 0.0
+    largest_win_pips = max([t.pnl_after_costs for t in profit_deals]) if profit_deals else 0.0
+    largest_loss_pips = abs(min([t.pnl_after_costs for t in loss_deals])) if loss_deals else 0.0
 
-    # Consecutive wins/losses
+    # Consecutive wins/losses (sign-based)
     max_consecutive_wins = 0
     max_consecutive_losses = 0
     max_consecutive_wins_pnl = 0.0
@@ -638,7 +649,7 @@ def run_backtest(
     current_losses_pnl = 0.0
 
     for trade in completed_trades:
-        if trade.status == "win":
+        if trade.pnl_after_costs > 0:  # Profitable deal
             current_wins += 1
             current_wins_pnl += trade.pnl_after_costs
             current_losses = 0
@@ -647,7 +658,7 @@ def run_backtest(
             if current_wins > max_consecutive_wins:
                 max_consecutive_wins = current_wins
                 max_consecutive_wins_pnl = current_wins_pnl
-        else:  # loss
+        else:  # Loss deal (pnl_after_costs < 0)
             current_losses += 1
             current_losses_pnl += abs(trade.pnl_after_costs)
             current_wins = 0
@@ -657,18 +668,18 @@ def run_backtest(
                 max_consecutive_losses = current_losses
                 max_consecutive_losses_pnl = current_losses_pnl
 
-    # Long/Short breakdown
+    # Long/Short breakdown (sign-based)
     long_trades = [t for t in completed_trades if t.direction == "BUY"]
     short_trades = [t for t in completed_trades if t.direction == "SELL"]
 
     trade_count_long = len(long_trades)
     trade_count_short = len(short_trades)
 
-    long_wins = [t for t in long_trades if t.status == "win"]
-    short_wins = [t for t in short_trades if t.status == "win"]
+    long_profit_deals = [t for t in long_trades if t.pnl_after_costs > 0]
+    short_profit_deals = [t for t in short_trades if t.pnl_after_costs > 0]
 
-    win_rate_long = (len(long_wins) / trade_count_long * 100) if trade_count_long > 0 else 0.0
-    win_rate_short = (len(short_wins) / trade_count_short * 100) if trade_count_short > 0 else 0.0
+    win_rate_long = (len(long_profit_deals) / trade_count_long * 100) if trade_count_long > 0 else 0.0
+    win_rate_short = (len(short_profit_deals) / trade_count_short * 100) if trade_count_short > 0 else 0.0
 
     # Calculate max drawdown in pips
     equity_curve = []
@@ -697,8 +708,8 @@ def run_backtest(
     results = {
         # Trade counts
         "total_trades": total_trades,
-        "winning_trades": len(winning_trades),
-        "losing_trades": len(losing_trades),
+        "winning_trades": len(profit_deals),  # Profitable deals (pnl_after_costs > 0)
+        "losing_trades": len(loss_deals),     # Loss deals (pnl_after_costs < 0)
         "trade_count_long": trade_count_long,
         "trade_count_short": trade_count_short,
 
@@ -755,8 +766,8 @@ def run_backtest(
         print("=" * 70)
 
         print(f"\n{'Trades':<30} {total_trades:>10}")
-        print(f"{'Profit trades (% of total)':<30} {len(winning_trades):>6} ({profit_trades_pct:.1f}%)")
-        print(f"{'Loss trades (% of total)':<30} {len(losing_trades):>6} ({loss_trades_pct:.1f}%)")
+        print(f"{'Profit trades (% of total)':<30} {len(profit_deals):>6} ({profit_trades_pct:.1f}%)")
+        print(f"{'Loss trades (% of total)':<30} {len(loss_deals):>6} ({loss_trades_pct:.1f}%)")
         print(f"{'  Long trades (won %)':<30} {trade_count_long:>6} ({win_rate_long:.1f}%)")
         print(f"{'  Short trades (won %)':<30} {trade_count_short:>6} ({win_rate_short:.1f}%)")
 
