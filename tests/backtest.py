@@ -77,21 +77,16 @@ def apply_exit_costs(trade: Trade, exit_price: float) -> float:
         return exit_price + (trade.spread_pips / 2 + trade.slippage_pips) * trade.pip_value
 
 
-def commission_usd_to_pips(commission_usd: float, lot_size: float, usd_per_pip_per_lot: float) -> float:
+def commission_usd_to_pips(commission_usd: float, usd_per_pip_per_lot: float) -> float:
     """
     Convert USD commission to pips.
 
-    Args:
-        commission_usd: Commission in USD
-        lot_size: Position size in lots
-        usd_per_pip_per_lot: USD value per pip per lot (default ~10.0 for EURUSD)
-
-    Returns:
-        Commission in pips
+    commission_usd should already include lot sizing (i.e., USD total for this trade leg).
     """
-    if lot_size == 0 or usd_per_pip_per_lot == 0:
+    if usd_per_pip_per_lot == 0:
         return 0.0
-    return commission_usd / (usd_per_pip_per_lot * lot_size)
+    return commission_usd / usd_per_pip_per_lot
+
 
 
 def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float) -> bool:
@@ -120,7 +115,7 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + exit (1 side) = 2 sides total
             exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
             trade.exit_reason = "SL hit"
             return True
@@ -149,7 +144,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + 3 exit sides (TP1 + TP2 + TP3) = 4 sides total
             exit_commission_usd = 3 * trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp3_exit
@@ -174,7 +170,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + 2 exit sides (TP1 + TP2) = 3 sides total
             exit_commission_usd = 2 * trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp2_exit
@@ -196,7 +193,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + 1 exit side (TP1) = 2 sides total
             exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp1_exit
@@ -216,7 +214,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + exit (1 side) = 2 sides total
             exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
             trade.exit_reason = "SL hit"
             return True
@@ -243,7 +242,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + 3 exit sides (TP1 + TP2 + TP3) = 4 sides total
             exit_commission_usd = 3 * trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp3_exit
@@ -267,7 +267,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + 2 exit sides (TP1 + TP2) = 3 sides total
             exit_commission_usd = 2 * trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp2_exit
@@ -288,7 +289,8 @@ def check_trade_outcome(trade: Trade, bar: pd.Series, usd_per_pip_per_lot: float
             # Commission: entry (1 side) + 1 exit side (TP1) = 2 sides total
             exit_commission_usd = trade.commission_per_side_per_lot * trade.lot_size
             total_commission_usd = trade.entry_commission + exit_commission_usd
-            total_commission_pips = commission_usd_to_pips(total_commission_usd, trade.lot_size, usd_per_pip_per_lot)
+            total_commission_pips = commission_usd_to_pips(total_commission_usd, usd_per_pip_per_lot)
+
             trade.pnl_after_costs = trade.pnl_pips - total_commission_pips
 
             trade.exit_price = tp1_exit
