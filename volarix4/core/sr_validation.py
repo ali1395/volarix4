@@ -13,17 +13,19 @@ class SRLevelValidator:
     Broken levels are not used for 24 hours minimum.
     """
 
-    def __init__(self, pip_value: float = 0.0001):
+    def __init__(self, pip_value: float = 0.0001, cooldown_hours: float = 24.0, invalidation_threshold_pips: float = 15.0):
         """
         Initialize validator.
 
         Args:
             pip_value: Value of 1 pip (default: 0.0001 for forex)
+            cooldown_hours: Hours before broken level can be reused (default: 24.0)
+            invalidation_threshold_pips: Pips to consider level broken (default: 15.0)
         """
         self.pip_value = pip_value
         self.broken_levels = {}  # {level: timestamp_broken}
-        self.invalidation_threshold_pips = 15.0  # Pips to consider level broken
-        self.cooldown_hours = 24  # Hours before broken level can be reused
+        self.invalidation_threshold_pips = invalidation_threshold_pips
+        self.cooldown_hours = cooldown_hours
 
     def is_level_broken(self, level: float, level_type: str, df: pd.DataFrame) -> bool:
         """

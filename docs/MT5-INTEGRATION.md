@@ -1,24 +1,24 @@
 # MT5 Integration Guide - Volarix 4
 
-Complete guide for integrating Volarix 4 API with MetaTrader 5 using the C++ DLL bridge.
+Complete guide for integrating Volarix 4 API with MetaTrader 5 with **backtest parity** support.
 
 ## Overview
 
-The MT5 integration consists of two components:
-1. **Volarix4Bridge.dll** - C++ bridge that sends OHLCV data to the API
-2. **volarix4.mq5** - Expert Advisor that calls the DLL and executes trades
+The MT5 integration now uses **direct WebRequest** to call the API with full strategy parameters matching `tests/backtest.py`:
+1. **volarix4.mq5** - Expert Advisor that calls the API via WebRequest and executes trades
+2. **Backtest Parity Mode** - Forces best backtest parameters for comparable results
+
+**DEPRECATED:** The previous DLL-based integration (Volarix4Bridge.dll) is no longer needed.
 
 ## Architecture
 
 ```
-MT5 Chart
+MT5 Chart / Strategy Tester
     ↓
 volarix4.mq5 (Expert Advisor)
-    ↓
-Volarix4Bridge.dll (C++ Bridge)
-    ↓ HTTP POST
+    ↓ HTTP POST (with strategy parameters)
 Volarix 4 API (FastAPI)
-    ↓
+    ↓ (applies same filters as tests/backtest.py)
 Response (Signal + SL/TP)
     ↓
 volarix4.mq5 executes trade
@@ -26,102 +26,90 @@ volarix4.mq5 executes trade
 
 ## Prerequisites
 
-- Visual Studio 2019+ (for compiling DLL)
 - MetaTrader 5 (64-bit)
 - Volarix 4 API running on `localhost:8000`
+- No DLL compilation needed (now uses native WebRequest)
 
-## Step 1: Compile the DLL
+## Backtest Parity Mode
 
-### Critical Struct Alignment Fix
+**NEW:** The EA now supports **Backtest Parity Mode** to make MT5 Strategy Tester results comparable to `tests/backtest.py`.
 
-⚠️ **IMPORTANT**: The struct definition MUST use `#pragma pack(1)` and `long long timestamp` to match MQL5's memory layout exactly.
+### How It Works
 
-**Correct struct (volarix4_bridge.cpp:24-34):**
-```cpp
-#pragma pack(push, 1)  // No padding!
-struct OHLCVBar
-{
-    long long timestamp; // 8 bytes (NOT long!)
-    double open;         // 8 bytes
-    double high;         // 8 bytes
-    double low;          // 8 bytes
-    double close;        // 8 bytes
-    int volume;          // 4 bytes
-};                       // Total: exactly 44 bytes
-#pragma pack(pop)
-```
+When `BacktestParityMode = true` (default), the EA:
+1. **Forces** best backtest parameters regardless of input values:
+   - `min_confidence = 0.60`
+   - `broken_level_cooldown_hours = 48.0`
+   - `broken_level_break_pips = 15.0`
+   - `min_edge_pips = 4.0`
+   - Standard cost model: spread=1.0, slippage=0.5, commission=$7/lot
+2. **Logs** all active parameters to MT5 Experts tab on startup
+3. **Sends** these parameters to the API in every request
+4. **Ensures** API applies same filters as Python backtest
 
-**Why This Matters:**
-- Without `#pragma pack(1)`: Struct = 48 bytes (compiler adds padding)
-- With `#pragma pack(1)`: Struct = 44 bytes (matches MQL5)
-- Wrong packing = corrupted data, wrong dates, garbage prices
+### Why Use Backtest Parity Mode?
 
-### Compilation Steps
+- **Comparable results**: MT5 Strategy Tester will use same strategy logic as `tests/backtest.py`
+- **Apples-to-apples**: You can compare win rate, profit factor, etc. between Python and MT5
+- **Debug discrepancies**: Any differences are due to MT5 tick model / order fill, not strategy params
 
-1. **Open Visual Studio Project**
-   - Create new C++ DLL project or use existing
-   - Add `volarix4_bridge.cpp`
-   - Set configuration to **Release | x64**
+### Running Strategy Tester in Parity Mode
 
-2. **Build Settings**
+1. **Attach EA** to Strategy Tester
+2. **Set Parameters:**
    ```
-   Platform: x64 (NOT x86!)
-   Configuration: Release
-   Runtime Library: Multi-threaded DLL (/MD)
+   BacktestParityMode = true  (force best backtest params)
+   SymbolToCheck = EURUSD
+   Timeframe = H1
+   LookbackBars = 400
+   EnableTrading = true
    ```
+3. **Check Experts Tab** - Should see:
+   ```
+   *** BACKTEST PARITY MODE ACTIVE ***
+   Forcing best backtest parameters (overriding inputs):
+     MinConfidence: 0.60
+     BrokenLevelCooldownHours: 48.0
+     BrokenLevelBreakPips: 15.0
+     MinEdgePips: 4.0
+   Cost Model:
+     SpreadPips: 1.0
+     SlippagePips: 0.5
+     CommissionPerSidePerLot: $7.0
+     UsdPerPipPerLot: $10.0
+     LotSize: 1.0
+   ```
+4. **Run backtest** - Results should closely match Python backtest (within tick model differences)
 
-3. **Build the DLL**
-   - Build → Build Solution (Ctrl+Shift+B)
-   - Output: `Volarix4Bridge.dll`
+## Step 1: Deploy EA to MT5 (SIMPLIFIED - No DLL Needed!)
 
-4. **Verify Struct Size**
-   - Check debug log after first call: `E:\Volarix4Bridge_Debug.txt`
-   - Should see: `OHLCVBar struct size: 44 bytes (should be 44)`
-   - If it says 48 bytes, the packing didn't work!
-
-## Step 2: Deploy to MT5
-
-### Copy DLL to MT5
+### Copy Expert Advisor
 
 1. **Find MT5 Data Folder:**
    - In MT5: File → Open Data Folder
    - Typical path: `C:\Users\[User]\AppData\Roaming\MetaQuotes\Terminal\[ID]\`
 
-2. **Copy DLL:**
+2. **Copy EA:**
    ```
-   Copy: Volarix4Bridge.dll
-   To:   [MT5 Data Folder]\MQL5\Libraries\Volarix4Bridge.dll
-   ```
-
-3. **Verify Copy:**
-   ```cmd
-   dir "%APPDATA%\MetaQuotes\Terminal\*\MQL5\Libraries\Volarix4Bridge.dll"
+   Copy: mt5_integration/volarix4.mq5
+   To:   [MT5 Data Folder]\MQL5\Experts\volarix4.mq5
    ```
 
-### Copy Expert Advisor
+## Step 2: Configure MT5
 
-```
-Copy: volarix4.mq5
-To:   [MT5 Data Folder]\MQL5\Experts\volarix4.mq5
-```
-
-## Step 3: Configure MT5
-
-### Enable DLL Imports
+### Enable WebRequest
 
 1. Tools → Options → Expert Advisors
-2. Check ✅ **Allow DLL imports**
-3. Check ✅ **Allow WebRequest for listed URL**
-4. Add URL: `http://localhost:8000`
-5. Click OK
+2. Check ✅ **Allow WebRequest for listed URL**
+3. Add URL: `http://localhost:8000`
+4. Click OK
 
-### Recompile EA (if modified)
+### Compile EA
 
-If you modified volarix4.mq5:
 1. MetaEditor → Open `volarix4.mq5`
 2. Compile (F7)
 3. Check for errors
-4. Verify it shows: `#import "Volarix4Bridge.dll"`
+4. Should compile successfully without DLL dependency
 
 ## Step 4: Run the EA
 
@@ -148,12 +136,32 @@ Verify API is running:
 
 3. **Configure Parameters**
    ```
-   Symbol: EURUSD
+   # Basic Settings
+   SymbolToCheck: EURUSD
    Timeframe: H1
-   Lookback Bars: 400
-   Risk Percent: 1.0
-   Max Positions: 1
-   Enable Trading: true (for live), false (for testing)
+   LookbackBars: 400
+   API_URL: http://localhost:8000
+
+   # Trade Management
+   RiskPercent: 1.0
+   MaxPositions: 1
+   EnableTrading: true (for live), false (for testing)
+
+   # Backtest Parity Mode (RECOMMENDED)
+   BacktestParityMode: true
+
+   # Strategy Parameters (only used if BacktestParityMode = false)
+   MinConfidence: 0.60
+   BrokenLevelCooldownHours: 48.0
+   BrokenLevelBreakPips: 15.0
+   MinEdgePips: 4.0
+
+   # Cost Model (only used if BacktestParityMode = false)
+   SpreadPips: 1.0
+   SlippagePips: 0.5
+   CommissionPerSidePerLot: 7.0
+   UsdPerPipPerLot: 10.0
+   LotSize: 1.0
    ```
 
 4. **Enable AutoTrading**
@@ -166,23 +174,32 @@ Verify API is running:
 
 **MT5 Experts Tab** (Toolbox → Experts):
 ```
+=================================================
 Volarix 4 EA Started - S/R Bounce Strategy
+=================================================
 Symbol: EURUSD
 Timeframe: H1
 Lookback Bars: 400
 API URL: http://localhost:8000
 Auto-Trading: ENABLED
-```
-
-### Check DLL Calls
-
-**DLL Debug Log** (`E:\Volarix4Bridge_Debug.txt`):
-```
-=== DLL Called ===
-OHLCVBar struct size: 44 bytes (should be 44)  ← MUST BE 44!
-Bar count: 400
-First bar: timestamp=1705888800, open=1.08921, close=1.09012
-Second bar: timestamp=1705892400, open=1.09014, close=1.09020  ← NOT ZEROS!
+Backtest Parity Mode: ENABLED
+=================================================
+*** BACKTEST PARITY MODE ACTIVE ***
+Forcing best backtest parameters (overriding inputs):
+  MinConfidence: 0.60
+  BrokenLevelCooldownHours: 48.0
+  BrokenLevelBreakPips: 15.0
+  MinEdgePips: 4.0
+Cost Model:
+  SpreadPips: 1.0
+  SlippagePips: 0.5
+  CommissionPerSidePerLot: $7.0
+  UsdPerPipPerLot: $10.0
+  LotSize: 1.0
+=================================================
+Make sure 'Allow Web Requests' is enabled for:
+  http://localhost:8000
+=================================================
 ```
 
 ### Check API Calls
@@ -190,11 +207,31 @@ Second bar: timestamp=1705892400, open=1.09014, close=1.09020  ← NOT ZEROS!
 **API Log** (in terminal running the API):
 ```
 [INFO] >> POST /signal
+[INFO] ======================================================================
+[INFO] RESOLVED STRATEGY PARAMETERS (Backtest Parity Mode)
+[INFO] ======================================================================
+[INFO]   min_confidence: 0.6
+[INFO]   broken_level_cooldown_hours: 48.0
+[INFO]   broken_level_break_pips: 15.0
+[INFO]   min_edge_pips: 4.0
+[INFO] Cost Model Parameters:
+[INFO]   spread_pips: 1.0
+[INFO]   slippage_pips: 0.5
+[INFO]   commission_per_side_per_lot: $7.0
+[INFO]   usd_per_pip_per_lot: $10.0
+[INFO]   lot_size: 1.0
+[INFO] ======================================================================
 [INFO] Signal request: EURUSD [Single-TF]
+[INFO] [DEBUG] Total bars received: 400
 [INFO] [DEBUG] Bars with time=0: 0 out of 400  ← SHOULD BE 0!
 [INFO] [DEBUG] First timestamp: 2024-01-22 02:00:00  ← CORRECT YEAR!
 [INFO] S/R Levels Detected: 3
+[INFO] Checking Broken Level Filter...
+[INFO] Broken Level Filter: PASSED
 [INFO] Rejection Found: SELL at 1.04368
+[INFO] Confidence Filter: PASSED (0.65 >= 0.60)
+[INFO] Checking Minimum Edge After Costs...
+[INFO] Edge Filter: PASSED - Sufficient edge after costs
 [INFO] Trade Setup Calculated: Entry=1.04277, SL=1.04468, TP=1.03895
 ```
 
@@ -373,34 +410,141 @@ Run one EA instance per symbol:
 
 ### Monitoring
 
-- Check DLL debug log daily: `E:\Volarix4Bridge_Debug.txt`
 - Check MT5 Experts tab for errors
 - Check API logs: `logs/volarix4_YYYY-MM-DD.log`
 - Review trade log: `[MT5 Data]\Files\volarix4_log.csv`
+- Monitor parameter logging on each new bar
 
 ### Updates
 
-**After updating DLL:**
-1. Rebuild DLL
-2. Copy to MT5 Libraries folder
-3. **Restart MT5** (critical!)
-4. Reattach EA to chart
-
-**After updating MQ5:**
+**After updating EA:**
 1. Recompile in MetaEditor
 2. Remove EA from chart
 3. Reattach EA to chart
+4. Verify BacktestParityMode parameters in Experts tab
+
+## Expected Differences: Python Backtest vs MT5
+
+Even with Backtest Parity Mode enabled, you may see small differences between `tests/backtest.py` and MT5 Strategy Tester results:
+
+### 1. **Tick Model Differences**
+
+**Python Backtest:**
+- Uses OHLC bar data only
+- Entry filled at exact rejection entry price
+- TP/SL hit at exact levels
+
+**MT5 Strategy Tester:**
+- Generates ticks based on tick model ("Every tick", "OHLC", "1 minute OHLC", etc.)
+- Entry may be filled at Ask/Bid with spread
+- TP/SL may be hit earlier/later due to synthetic tick generation
+- Slippage simulation may vary
+
+**Impact:**
+- Win rate may differ by ±2-5%
+- Individual trade P&L may vary slightly
+- Overall profit factor should be similar (within 10-15%)
+
+### 2. **Order Fill Rules**
+
+**Python Backtest:**
+- Instant fill at calculated price
+- No spread/slippage unless explicitly modeled (which we now do)
+- No requotes or partial fills
+
+**MT5 Strategy Tester:**
+- Simulates broker execution
+- Spread applied on entry (buy at Ask, sell at Bid)
+- May model requotes, partial fills depending on settings
+- Commission applied per broker settings
+
+**Impact:**
+- MT5 will show slightly higher transaction costs
+- Entry prices may differ by spread amount
+- Some signals may not fill if price doesn't reach entry
+
+### 3. **Timestamp Precision**
+
+**Python Backtest:**
+- Uses bar close time
+- Signal generated at bar close
+
+**MT5 Strategy Tester:**
+- Uses bar open time for next bar (EA runs on new bar)
+- Slight timing offset (seconds to minutes)
+
+**Impact:**
+- Minimal - both use same OHLC data
+- May affect session filter edge cases
+
+### 4. **Cost Model Precision**
+
+**Python Backtest:**
+- Calculates exact costs per trade
+- `total_cost_pips = spread + 2*slippage + commission_pips`
+- Filters based on exact min_edge
+
+**MT5 Strategy Tester:**
+- Uses broker's commission settings
+- Spread may vary per tick
+- Slippage applied at execution (not deterministic)
+
+**Impact:**
+- Edge filter may behave slightly differently
+- Some borderline trades may be filtered in Python but not MT5 (or vice versa)
+
+### 5. **What Should Match Closely**
+
+✅ **These should be nearly identical:**
+- Number of signals generated (±5%)
+- Signal direction (BUY/SELL) on same bars
+- Confidence scores
+- Entry/SL/TP levels (within spread tolerance)
+- Filter rejection reasons (confidence, broken level, edge)
+
+❌ **These will differ:**
+- Exact fill prices (spread/slippage)
+- Exact profit in USD (execution differences)
+- Time of signal (seconds offset)
+
+### Recommended Comparison
+
+To compare Python backtest with MT5:
+
+1. **Run Python backtest:**
+   ```bash
+   python tests/backtest.py --min_confidence 0.60 --broken_level_cooldown_hours 48.0 --min_edge_pips 4.0
+   ```
+
+2. **Run MT5 Strategy Tester:**
+   - BacktestParityMode = true
+   - Same date range
+   - Same symbol (EURUSD)
+   - Tick model: "Every tick" or "1 minute OHLC"
+   - Spread: Fixed at 1.0 pip (or whatever Python uses)
+
+3. **Compare metrics:**
+   - Total signals generated: Should be within 5%
+   - Win rate: Should be within 3-5%
+   - Avg win/loss: Should be similar
+   - Profit factor: Should be within 10-15%
+
+4. **Investigate large discrepancies:**
+   - Check API logs for filtered signals
+   - Verify parameters are being applied
+   - Check MT5 spread settings match Python
+   - Review individual trades where results differ
 
 ## Debug Checklist
 
 When things aren't working:
 
 - [ ] API is running (`http://localhost:8000/docs` loads)
-- [ ] DLL is in `MQL5\Libraries\Volarix4Bridge.dll`
-- [ ] "Allow DLL imports" is enabled in MT5
-- [ ] DLL compiled for x64 (not x86)
-- [ ] DLL debug log shows struct size = 44 bytes
-- [ ] API log shows "Bars with time=0: 0 out of 400"
+- [ ] "Allow WebRequest for listed URL" is enabled in MT5
+- [ ] URL `http://localhost:8000` is in allowed list
+- [ ] BacktestParityMode = true (or custom params set correctly)
+- [ ] API log shows "RESOLVED STRATEGY PARAMETERS"
+- [ ] API log shows correct parameter values (0.60, 48.0, etc.)
 - [ ] Timestamps are correct year (2024+, not 1970)
 - [ ] EA shows parameters correctly on attach
 - [ ] AutoTrading is enabled (😊 face)
@@ -418,22 +562,27 @@ If you encounter issues not covered here:
 
 ## Summary
 
-**Minimum Viable Setup:**
-1. Compile `volarix4_bridge.cpp` → `Volarix4Bridge.dll` (x64, pack=1)
-2. Copy DLL to `MQL5\Libraries\`
-3. Copy `volarix4.mq5` to `MQL5\Experts\`
-4. Enable DLL imports in MT5
-5. Start API: `python -m volarix4.run`
-6. Attach EA to chart
-7. Verify struct size = 44 bytes
-8. Verify no zero timestamps
-9. Enable AutoTrading
+**Minimum Viable Setup (SIMPLIFIED - No DLL!):**
+1. Copy `mt5_integration/volarix4.mq5` to `MQL5\Experts\`
+2. Enable WebRequest in MT5 for `http://localhost:8000`
+3. Compile EA in MetaEditor
+4. Start API: `python -m volarix4.run`
+5. Attach EA to chart with `BacktestParityMode = true`
+6. Verify parameters in Experts tab
+7. Enable AutoTrading
 
 **Success Indicators:**
-- ✅ Struct size: 44 bytes
+- ✅ API log shows "RESOLVED STRATEGY PARAMETERS"
+- ✅ Parameters match backtest: 0.60, 48.0h, 4.0 pips
 - ✅ Bars with time=0: 0 out of 400
 - ✅ Correct dates (2024+)
 - ✅ SL and TP set on trades
-- ✅ Deterministic backtest results
+- ✅ Edge filter passes/fails match Python backtest logic
 
-Your MT5 integration is now complete! 🚀
+**Backtest Parity:**
+- MT5 Strategy Tester results should be comparable to `tests/backtest.py`
+- Same signals generated (±5%)
+- Same filter logic (confidence, broken levels, edge)
+- Expected differences are tick model and order fill rules only
+
+Your MT5 integration with backtest parity is now complete! 🚀

@@ -18,7 +18,7 @@ from volarix4.core.trade_setup import calculate_trade_setup
 from volarix4.core.trend_filter import detect_trend, validate_signal_with_trend
 from volarix4.core.sr_validation import SRLevelValidator
 from volarix4.utils.helpers import calculate_pip_value
-from volarix4.config import SR_CONFIG, REJECTION_CONFIG, RISK_CONFIG
+from volarix4.config import SR_CONFIG, REJECTION_CONFIG, RISK_CONFIG, BACKTEST_PARITY_CONFIG
 from volarix4.utils.logger import setup_logger, log_signal_details
 from volarix4.utils.monitor import monitor
 
@@ -49,6 +49,19 @@ class SignalRequest(BaseModel):
     context_timeframe: str | None = None  # Optional context TF (multi-TF)
     context_data: list[OHLCVBar] | None = None  # Context TF bars
     model_type: str = "ensemble"  # Model type (ignored in V4)
+
+    # Strategy parameters (optional - for backtest parity with tests/backtest.py)
+    min_confidence: float | None = None
+    broken_level_cooldown_hours: float | None = None
+    broken_level_break_pips: float | None = None
+    min_edge_pips: float | None = None
+
+    # Cost model parameters (optional - for backtest parity)
+    spread_pips: float | None = None
+    slippage_pips: float | None = None
+    commission_per_side_per_lot: float | None = None
+    usd_per_pip_per_lot: float | None = None
+    lot_size: float | None = None
 
 
 class SignalResponse(BaseModel):
@@ -208,6 +221,35 @@ def create_app() -> FastAPI:
         start_time = time.time()
 
         try:
+            # Resolve strategy parameters (use request values or defaults from BACKTEST_PARITY_CONFIG)
+            min_confidence = request.min_confidence if request.min_confidence is not None else BACKTEST_PARITY_CONFIG["min_confidence"]
+            broken_level_cooldown_hours = request.broken_level_cooldown_hours if request.broken_level_cooldown_hours is not None else BACKTEST_PARITY_CONFIG["broken_level_cooldown_hours"]
+            broken_level_break_pips = request.broken_level_break_pips if request.broken_level_break_pips is not None else BACKTEST_PARITY_CONFIG["broken_level_break_pips"]
+            min_edge_pips = request.min_edge_pips if request.min_edge_pips is not None else BACKTEST_PARITY_CONFIG["min_edge_pips"]
+
+            # Resolve cost model parameters
+            spread_pips = request.spread_pips if request.spread_pips is not None else BACKTEST_PARITY_CONFIG["spread_pips"]
+            slippage_pips = request.slippage_pips if request.slippage_pips is not None else BACKTEST_PARITY_CONFIG["slippage_pips"]
+            commission_per_side_per_lot = request.commission_per_side_per_lot if request.commission_per_side_per_lot is not None else BACKTEST_PARITY_CONFIG["commission_per_side_per_lot"]
+            usd_per_pip_per_lot = request.usd_per_pip_per_lot if request.usd_per_pip_per_lot is not None else BACKTEST_PARITY_CONFIG["usd_per_pip_per_lot"]
+            lot_size = request.lot_size if request.lot_size is not None else BACKTEST_PARITY_CONFIG["lot_size"]
+
+            # Log resolved parameter values for verification
+            logger.info("=" * 70)
+            logger.info("RESOLVED STRATEGY PARAMETERS (Backtest Parity Mode)")
+            logger.info("=" * 70)
+            logger.info(f"  min_confidence: {min_confidence}")
+            logger.info(f"  broken_level_cooldown_hours: {broken_level_cooldown_hours}")
+            logger.info(f"  broken_level_break_pips: {broken_level_break_pips}")
+            logger.info(f"  min_edge_pips: {min_edge_pips}")
+            logger.info(f"Cost Model Parameters:")
+            logger.info(f"  spread_pips: {spread_pips}")
+            logger.info(f"  slippage_pips: {slippage_pips}")
+            logger.info(f"  commission_per_side_per_lot: ${commission_per_side_per_lot}")
+            logger.info(f"  usd_per_pip_per_lot: ${usd_per_pip_per_lot}")
+            logger.info(f"  lot_size: {lot_size}")
+            logger.info("=" * 70)
+
             # Determine effective timeframe
             exec_tf = request.execution_timeframe or request.timeframe
             ctx_tf = request.context_timeframe
@@ -335,7 +377,11 @@ def create_app() -> FastAPI:
 
             # 5. Validate S/R levels (filter broken levels)
             logger.info("Checking Broken Level Filter...")
-            sr_validator = SRLevelValidator(pip_value=pip_value)
+            sr_validator = SRLevelValidator(
+                pip_value=pip_value,
+                cooldown_hours=broken_level_cooldown_hours,
+                invalidation_threshold_pips=broken_level_break_pips
+            )
             levels_before = len(levels)
 
             # Log level details before validation
@@ -440,7 +486,6 @@ def create_app() -> FastAPI:
 
             # 6.5. Check minimum confidence threshold
             logger.info("Checking Confidence Score...")
-            min_confidence = REJECTION_CONFIG["min_confidence"]
             logger.info(f"Rejection Score: {rejection['confidence']:.3f}, Min Required: {min_confidence}")
 
             if rejection['confidence'] < min_confidence:
@@ -604,6 +649,67 @@ def create_app() -> FastAPI:
                 )
 
             logger.info(f"Risk Filter: PASSED")
+
+            # 8.5. Check minimum edge after costs (backtest parity filter)
+            logger.info("Checking Minimum Edge After Costs...")
+
+            # Calculate round-trip costs in pips
+            commission_pips = (2 * commission_per_side_per_lot * lot_size) / usd_per_pip_per_lot
+            total_cost_pips = spread_pips + (2 * slippage_pips) + commission_pips
+
+            # Calculate TP1 distance in pips
+            if trade_setup['signal'] == "BUY":
+                tp1_distance_pips = (trade_setup['tp1'] - trade_setup['entry']) / pip_value
+            elif trade_setup['signal'] == "SELL":
+                tp1_distance_pips = (trade_setup['entry'] - trade_setup['tp1']) / pip_value
+            else:
+                tp1_distance_pips = 0.0
+
+            logger.info(f"Cost Analysis:")
+            logger.info(f"  - Spread: {spread_pips:.1f} pips")
+            logger.info(f"  - Slippage (2x): {2 * slippage_pips:.1f} pips")
+            logger.info(f"  - Commission: {commission_pips:.2f} pips (${commission_per_side_per_lot} x 2 x {lot_size} lots / ${usd_per_pip_per_lot} per pip)")
+            logger.info(f"  - Total Cost: {total_cost_pips:.2f} pips")
+            logger.info(f"  - TP1 Distance: {tp1_distance_pips:.2f} pips")
+            logger.info(f"  - Min Edge Required: {min_edge_pips:.2f} pips")
+            logger.info(f"  - Net Edge: {tp1_distance_pips - total_cost_pips:.2f} pips (need > {min_edge_pips:.2f})")
+
+            # Check if TP1 provides sufficient edge after costs
+            if tp1_distance_pips <= total_cost_pips + min_edge_pips:
+                logger.info(f"Edge Filter: FAILED - Insufficient edge after costs")
+                logger.info(f"Signal Rejected - Reason: TP1 distance ({tp1_distance_pips:.2f} pips) <= total costs ({total_cost_pips:.2f}) + min edge ({min_edge_pips:.2f})")
+
+                log_signal_details(logger, "EDGE_CHECK", {
+                    'tp1_distance_pips': round(tp1_distance_pips, 2),
+                    'total_cost_pips': round(total_cost_pips, 2),
+                    'min_edge_pips': min_edge_pips,
+                    'net_edge': round(tp1_distance_pips - total_cost_pips, 2),
+                    'passed': False
+                })
+
+                return SignalResponse(
+                    signal="HOLD",
+                    confidence=0.0,
+                    entry=0.0,
+                    sl=0.0,
+                    tp1=0.0,
+                    tp2=0.0,
+                    tp3=0.0,
+                    tp1_percent=RISK_CONFIG["tp1_percent"],
+                    tp2_percent=RISK_CONFIG["tp2_percent"],
+                    tp3_percent=RISK_CONFIG["tp3_percent"],
+                    reason=f"Insufficient edge after costs (TP1: {tp1_distance_pips:.1f} pips, costs: {total_cost_pips:.1f}, min edge: {min_edge_pips:.1f})"
+                )
+
+            logger.info(f"Edge Filter: PASSED - Sufficient edge after costs ({tp1_distance_pips - total_cost_pips:.2f} pips > {min_edge_pips:.2f})")
+
+            log_signal_details(logger, "EDGE_CHECK", {
+                'tp1_distance_pips': round(tp1_distance_pips, 2),
+                'total_cost_pips': round(total_cost_pips, 2),
+                'min_edge_pips': min_edge_pips,
+                'net_edge': round(tp1_distance_pips - total_cost_pips, 2),
+                'passed': True
+            })
 
             log_signal_details(logger, "TRADE_SETUP", {
                 'direction': trade_setup['signal'],

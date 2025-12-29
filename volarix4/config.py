@@ -29,7 +29,7 @@ REJECTION_CONFIG = {
     "close_position_buy": 0.60,  # Keep
     "close_position_sell": 0.40, # Keep
     "lookback_candles": 5,       # Keep
-    "min_confidence": 0.65       # DECREASE from 0.70 to 0.65 ⚠️ CRITICAL
+    "min_confidence": 0.60       # DEFAULT: 0.60 (best backtest parity) - overridable via API
 }
 
 
@@ -44,6 +44,23 @@ RISK_CONFIG = {
     "tp1_percent": 0.50,         # Change from 0.40 to 0.50 (take more profit early)
     "tp2_percent": 0.30,         # Change from 0.40 to 0.30
     "tp3_percent": 0.20          # Keep at 0.20
+}
+
+
+# Backtest Parity Defaults (matches best run from tests/backtest.py)
+# These are defaults when MT5 EA doesn't specify - can be overridden per request
+BACKTEST_PARITY_CONFIG = {
+    "min_confidence": 0.60,                    # Best backtest param
+    "broken_level_cooldown_hours": 48.0,       # Best backtest param (was 24h)
+    "broken_level_break_pips": 15.0,           # Default break threshold
+    "min_edge_pips": 4.0,                      # Minimum profitable edge after costs
+
+    # Cost model defaults (typical broker costs)
+    "spread_pips": 1.0,                        # Typical EURUSD spread
+    "slippage_pips": 0.5,                      # One-way slippage estimate
+    "commission_per_side_per_lot": 7.0,        # USD per lot per side
+    "usd_per_pip_per_lot": 10.0,               # Standard forex lot
+    "lot_size": 1.0                            # Default lot size for commission calc
 }
 
 
