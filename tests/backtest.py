@@ -621,6 +621,7 @@ def run_backtest(
         min_confidence: Optional[float] = None,
         broken_level_cooldown_hours: Optional[float] = None,
         broken_level_break_pips: float = 15.0,
+        min_edge_pips: float = 2.0,
         enable_confidence_filter: bool = True,
         enable_broken_level_filter: bool = True,
         # Data
@@ -733,7 +734,8 @@ def run_backtest(
     filter_rejections = {
         "confidence": 0,
         "broken_level": 0,
-        "invalid_geometry": 0
+        "invalid_geometry": 0,
+        "insufficient_edge": 0
     }
 
     pip_value = calculate_pip_value(symbol)
@@ -856,6 +858,23 @@ def run_backtest(
                             ):
                                 # Invalid geometry - skip this trade
                                 filter_rejections["invalid_geometry"] += 1
+                                signals_generated["HOLD"] += 1
+                                continue
+
+                            # Calculate round-trip costs in pips
+                            commission_pips = (2 * commission_per_side_per_lot * lot_size) / usd_per_pip_per_lot
+                            total_cost_pips = spread_pips + (2 * slippage_pips) + commission_pips
+
+                            # Calculate TP1 distance in pips
+                            if direction == "BUY":
+                                tp1_distance_pips = (trade_params['tp1'] - actual_entry) / pip_value
+                            else:  # SELL
+                                tp1_distance_pips = (actual_entry - trade_params['tp1']) / pip_value
+
+                            # Check minimum edge after costs
+                            if tp1_distance_pips <= total_cost_pips + min_edge_pips:
+                                # Insufficient edge - TP1 would not be profitable after costs
+                                filter_rejections["insufficient_edge"] += 1
                                 signals_generated["HOLD"] += 1
                                 continue
 
@@ -1146,6 +1165,7 @@ def run_backtest(
         print(f"{'Confidence rejections':<30} {filter_rejections['confidence']:>10}")
         print(f"{'Broken level rejections':<30} {filter_rejections['broken_level']:>10}")
         print(f"{'Invalid geometry rejections':<30} {filter_rejections['invalid_geometry']:>10}")
+        print(f"{'Insufficient edge rejections':<30} {filter_rejections['insufficient_edge']:>10}")
         print(f"{'Signals generated (BUY/SELL)':<30} {signals_generated['BUY']}/{signals_generated['SELL']:>5}")
 
         print("=" * 70 + "\n")
