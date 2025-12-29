@@ -272,11 +272,11 @@ SELL            7        -32.5        0.75
 - [x] ATR calculation function added
 - [x] trades_to_dataframe() function added
 - [x] print_bucket_diagnostics() function added
-- [ ] Populate Trade context in run_backtest() loop
-- [ ] Modify signal generation to return level_price/level_type
-- [ ] Add trades_df to run_backtest() return value
-- [ ] Add CSV saving to run_backtest()
-- [ ] Add bucket diagnostics call in walk-forward
+- [x] Populate Trade context in run_backtest() loop
+- [x] Add trades_df to run_backtest() return value
+- [x] Add CSV saving to run_backtest()
+- [x] Add bucket diagnostics call in walk-forward
+- [x] Modified signal generation to return level_type
 
 ## 🚀 Quick Start
 

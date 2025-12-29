@@ -836,6 +836,27 @@ def run_backtest(
                                 commission_per_side_per_lot=commission_per_side_per_lot,
                                 lot_size=lot_size
                             )
+
+                            # Populate trade context
+                            open_trade.rejection_confidence = confidence
+                            open_trade.level_price = rejection['level']
+                            open_trade.level_type = rejection.get('level_type', 'unknown')
+
+                            # Calculate SL/TP in pips
+                            if direction == "BUY":
+                                open_trade.sl_pips = (entry_bar['open'] - trade_params['sl']) / pip_value
+                                open_trade.tp1_pips = (trade_params['tp1'] - entry_bar['open']) / pip_value
+                            else:  # SELL
+                                open_trade.sl_pips = (trade_params['sl'] - entry_bar['open']) / pip_value
+                                open_trade.tp1_pips = (entry_bar['open'] - trade_params['tp1']) / pip_value
+
+                            # Time context
+                            open_trade.hour_of_day = entry_bar['time'].hour
+                            open_trade.day_of_week = entry_bar['time'].dayofweek
+
+                            # Calculate ATR at entry (using data up to current bar)
+                            df_for_atr = df.iloc[:next_bar_idx+1]
+                            open_trade.atr_pips_14 = calculate_atr_pips(df_for_atr, period=14, pip_value=pip_value)
                     else:
                         signals_generated["HOLD"] += 1
                 else:
@@ -1089,6 +1110,27 @@ def run_backtest(
         print(f"{'Signals generated (BUY/SELL)':<30} {signals_generated['BUY']}/{signals_generated['SELL']:>5}")
 
         print("=" * 70 + "\n")
+
+    # Convert trades to DataFrame
+    trades_df = trades_to_dataframe(completed_trades)
+
+    # Save to CSV with timestamp
+    import os
+    from datetime import datetime
+
+    output_dir = "./outputs"
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"{output_dir}/trades_{symbol}_{timeframe}_{timestamp}.csv"
+
+    if len(trades_df) > 0:
+        trades_df.to_csv(csv_filename, index=False)
+        if verbose:
+            print(f"✓ Saved {len(trades_df)} trades to {csv_filename}\n")
+
+    # Add trades_df to results
+    results['trades_df'] = trades_df
 
     return results
 
@@ -1548,6 +1590,12 @@ def run_walk_forward(
             }
 
         print("  " + "-" * 60)
+
+        # ================================================================
+        # BUCKET DIAGNOSTICS (Per-Trade Analysis)
+        # ================================================================
+        if len(test_trades) > 0:
+            print_bucket_diagnostics(test_trades, bucket_name=f"SPLIT {split_idx + 1} TEST")
 
         # ================================================================
         # TEST ALL PARAMETER COMBINATIONS (for parameter stability analysis)
