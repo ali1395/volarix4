@@ -585,6 +585,26 @@ def monte_carlo_reshuffle(pnl_list: List[float], observed_max_dd: float, n_simul
     }
 
 
+def levels_sane(entry: float, sl: float, tp1: float, tp2: float, tp3: float, direction: str) -> bool:
+    """
+    Sanity check for SL/TP geometry.
+
+    For BUY: sl < entry < tp1 < tp2 < tp3
+    For SELL: tp3 < tp2 < tp1 < entry < sl
+
+    Returns:
+        True if geometry is valid, False otherwise
+    """
+    direction = direction.upper()
+
+    if direction == "BUY":
+        return sl < entry < tp1 < tp2 < tp3
+    elif direction == "SELL":
+        return tp3 < tp2 < tp1 < entry < sl
+    else:
+        return False
+
+
 def run_backtest(
         symbol: str = "EURUSD",
         timeframe: str = "H1",
@@ -712,7 +732,8 @@ def run_backtest(
     signals_generated = {"BUY": 0, "SELL": 0, "HOLD": 0}
     filter_rejections = {
         "confidence": 0,
-        "broken_level": 0
+        "broken_level": 0,
+        "invalid_geometry": 0
     }
 
     pip_value = calculate_pip_value(symbol)
@@ -809,23 +830,40 @@ def run_backtest(
                         direction = rejection['direction']
                         signals_generated[direction] += 1
 
-                        # Calculate trade setup
-                        trade_params = calculate_sl_tp(
-                            entry=rejection['entry'],
-                            level=rejection['level'],
-                            direction=direction,
-                            sl_pips_beyond=10.0,
-                            pip_value=pip_value
-                        )
-
                         # Create trade (enter on next bar open)
                         next_bar_idx = i + 1
                         if next_bar_idx < len(df):
                             entry_bar = df.iloc[next_bar_idx]
+                            actual_entry = entry_bar['open']
+
+                            # Calculate trade setup using ACTUAL entry price (next bar open)
+                            trade_params = calculate_sl_tp(
+                                entry=actual_entry,
+                                level=rejection['level'],
+                                direction=direction,
+                                sl_pips_beyond=10.0,
+                                pip_value=pip_value
+                            )
+
+                            # Sanity check: validate SL/TP geometry
+                            if not levels_sane(
+                                entry=actual_entry,
+                                sl=trade_params['sl'],
+                                tp1=trade_params['tp1'],
+                                tp2=trade_params['tp2'],
+                                tp3=trade_params['tp3'],
+                                direction=direction
+                            ):
+                                # Invalid geometry - skip this trade
+                                filter_rejections["invalid_geometry"] += 1
+                                signals_generated["HOLD"] += 1
+                                continue
+
+                            # Create trade with validated parameters
                             open_trade = Trade(
                                 entry_time=entry_bar['time'],
                                 direction=direction,
-                                entry=entry_bar['open'],
+                                entry=actual_entry,
                                 sl=trade_params['sl'],
                                 tp1=trade_params['tp1'],
                                 tp2=trade_params['tp2'],
@@ -842,13 +880,13 @@ def run_backtest(
                             open_trade.level_price = rejection['level']
                             open_trade.level_type = rejection.get('level_type', 'unknown')
 
-                            # Calculate SL/TP in pips
+                            # Calculate SL/TP in pips (using actual_entry)
                             if direction == "BUY":
-                                open_trade.sl_pips = (entry_bar['open'] - trade_params['sl']) / pip_value
-                                open_trade.tp1_pips = (trade_params['tp1'] - entry_bar['open']) / pip_value
+                                open_trade.sl_pips = (actual_entry - trade_params['sl']) / pip_value
+                                open_trade.tp1_pips = (trade_params['tp1'] - actual_entry) / pip_value
                             else:  # SELL
-                                open_trade.sl_pips = (trade_params['sl'] - entry_bar['open']) / pip_value
-                                open_trade.tp1_pips = (entry_bar['open'] - trade_params['tp1']) / pip_value
+                                open_trade.sl_pips = (trade_params['sl'] - actual_entry) / pip_value
+                                open_trade.tp1_pips = (actual_entry - trade_params['tp1']) / pip_value
 
                             # Time context
                             open_trade.hour_of_day = entry_bar['time'].hour
@@ -1107,6 +1145,7 @@ def run_backtest(
         print(f"\n{'--- FILTER STATISTICS ---'}")
         print(f"{'Confidence rejections':<30} {filter_rejections['confidence']:>10}")
         print(f"{'Broken level rejections':<30} {filter_rejections['broken_level']:>10}")
+        print(f"{'Invalid geometry rejections':<30} {filter_rejections['invalid_geometry']:>10}")
         print(f"{'Signals generated (BUY/SELL)':<30} {signals_generated['BUY']}/{signals_generated['SELL']:>5}")
 
         print("=" * 70 + "\n")

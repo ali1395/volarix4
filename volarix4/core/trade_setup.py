@@ -24,6 +24,11 @@ def calculate_sl_tp(entry: float, level: float, direction: str,
     if tp_ratios is None:
         tp_ratios = [1.0, 2.0, 3.0]
 
+    # Validate direction parameter
+    direction = direction.upper()
+    if direction not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid direction '{direction}'. Must be 'BUY' or 'SELL'.")
+
     sl_distance = sl_pips_beyond * pip_value
 
     if direction == 'BUY':
