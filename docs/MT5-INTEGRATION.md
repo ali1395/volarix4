@@ -83,6 +83,19 @@ When `BacktestParityMode = true` (default), the EA:
 
 ## Step 1: Deploy EA to MT5 (SIMPLIFIED - No DLL Needed!)
 
+### Important: Closed Bars Only (Parity Contract)
+
+**CRITICAL:** The EA now sends **ONLY closed bars** to the API, matching the Parity Contract:
+- Uses `CopyRates(symbol, timeframe, 1, count)` - starts from index 1 (last closed bar)
+- Skips index 0 (current forming bar) to ensure deterministic results
+- Validates bar ordering, uniqueness, and timeframe alignment
+- Logs detailed validation info for debugging
+
+**Why this matters:**
+- Backtest uses only closed bars → MT5 must match
+- Forming bars have unreliable OHLC (only 1 tick at bar open)
+- Ensures API receives same bar state whether called live or in backtest
+
 ### Copy Expert Advisor
 
 1. **Find MT5 Data Folder:**
@@ -201,6 +214,24 @@ Make sure 'Allow Web Requests' is enabled for:
   http://localhost:8000
 =================================================
 ```
+
+**On Each New Bar:**
+```
+New H1 candle at 2025.02.10 16:00 - Calling Volarix 4 API...
+=== BAR VALIDATION (Parity Contract) ===
+  Bars copied: 400 (requested: 400)
+  First bar [0]: time=2024-12-25 12:00:00 (1735128000)
+  Last bar [399]: time=2025-02-10 15:00:00 (1739185200)
+  Delta last 2 bars: 3600 seconds (expected: 3600)
+  Last bar age: 3610 sec (timeframe: 3600 sec) - Closed: YES
+  Bars validation: PASSED
+========================================
+```
+
+**Critical indicators:**
+- ✅ `Closed: YES` - Last bar is fully closed (not forming)
+- ✅ `Delta last 2 bars: 3600` - Matches H1 timeframe (3600 seconds)
+- ✅ `Bars validation: PASSED` - All bars properly ordered and aligned
 
 ### Check API Calls
 

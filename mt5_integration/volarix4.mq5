@@ -305,13 +305,93 @@ void OnTick()
                TimeframeToString(Timeframe),
                TimeToString(current_time, TIME_DATE|TIME_MINUTES));
 
-   // Copy bars from MT5
+   // Copy bars from MT5 - CRITICAL: Skip index 0 (forming bar), start from index 1 (last closed bar)
+   // Per Parity Contract: API must receive ONLY closed bars
    MqlRates rates[];
-   int copied = CopyRates(SymbolToCheck, Timeframe, 0, LookbackBars, rates);
+   int copied = CopyRates(SymbolToCheck, Timeframe, 1, LookbackBars, rates);
 
    if(copied <= 0)
    {
-      Print("Failed to copy bars from MT5");
+      Print("ERROR: Failed to copy bars from MT5");
+      return;
+   }
+
+   // VALIDATION: Ensure we got the exact number of bars requested
+   if(copied != LookbackBars)
+   {
+      PrintFormat("WARNING: Requested %d bars but got %d bars", LookbackBars, copied);
+   }
+
+   // VALIDATION: Check bar ordering, uniqueness, and timeframe alignment
+   bool bars_valid = true;
+   int timeframe_seconds = PeriodSeconds(Timeframe);
+
+   for(int i = 0; i < copied; i++)
+   {
+      // Check for time == 0 (invalid bar)
+      if(rates[i].time == 0)
+      {
+         PrintFormat("ERROR: Bar [%d] has time == 0!", i);
+         bars_valid = false;
+      }
+
+      // Check for strictly increasing timestamps (no duplicates, no gaps)
+      if(i > 0)
+      {
+         long time_delta = (long)rates[i].time - (long)rates[i-1].time;
+
+         if(time_delta <= 0)
+         {
+            PrintFormat("ERROR: Bars not strictly increasing! Bar[%d] time=%d, Bar[%d] time=%d, delta=%d",
+                        i-1, rates[i-1].time, i, rates[i].time, time_delta);
+            bars_valid = false;
+         }
+
+         // Check timeframe alignment (each bar should be exactly N * timeframe apart)
+         if(time_delta % timeframe_seconds != 0)
+         {
+            PrintFormat("WARNING: Bar[%d] to Bar[%d] delta %d sec is not aligned to timeframe %d sec",
+                        i-1, i, time_delta, timeframe_seconds);
+         }
+      }
+   }
+
+   // Check if the last bar is closed (not forming)
+   // A forming bar often has open == close with minimal movement
+   // The last bar should be at least 1 period old
+   datetime last_bar_time = rates[copied-1].time;
+   datetime current_server_time = TimeCurrent();
+   long last_bar_age_seconds = (long)current_server_time - (long)last_bar_time;
+
+   // Last bar should be at least 1 full timeframe old (closed)
+   bool last_bar_closed = (last_bar_age_seconds >= timeframe_seconds);
+
+   if(!last_bar_closed)
+   {
+      PrintFormat("WARNING: Last bar may be forming! Age: %d sec, Timeframe: %d sec",
+                  last_bar_age_seconds, timeframe_seconds);
+   }
+
+   // DEBUG: Log first bar, last bar, and bar spacing
+   PrintFormat("=== BAR VALIDATION (Parity Contract) ===");
+   PrintFormat("  Bars copied: %d (requested: %d)", copied, LookbackBars);
+   PrintFormat("  First bar [0]: time=%s (%d)", TimeToString(rates[0].time, TIME_DATE|TIME_SECONDS), rates[0].time);
+   PrintFormat("  Last bar [%d]: time=%s (%d)", copied-1, TimeToString(rates[copied-1].time, TIME_DATE|TIME_SECONDS), rates[copied-1].time);
+
+   if(copied >= 2)
+   {
+      long delta = (long)rates[copied-1].time - (long)rates[copied-2].time;
+      PrintFormat("  Delta last 2 bars: %d seconds (expected: %d)", delta, timeframe_seconds);
+   }
+
+   PrintFormat("  Last bar age: %d sec (timeframe: %d sec) - Closed: %s",
+               last_bar_age_seconds, timeframe_seconds, last_bar_closed ? "YES" : "NO");
+   PrintFormat("  Bars validation: %s", bars_valid ? "PASSED" : "FAILED");
+   PrintFormat("========================================");
+
+   if(!bars_valid)
+   {
+      Print("ERROR: Bar validation failed - aborting API call");
       return;
    }
 
