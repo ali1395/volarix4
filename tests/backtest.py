@@ -686,6 +686,7 @@ def run_backtest(
             print(f"  Broken Level Threshold: {broken_level_break_pips} pips")
         else:
             print("  Broken Level Filter: OFF")
+        print(f"  Min Edge (pips): {min_edge_pips if min_edge_pips > 0 else 'OFF'}")
         print("=" * 70)
 
     # Get data (either pre-loaded or fetch from MT5)
@@ -1212,6 +1213,7 @@ def _run_single_backtest(args):
         min_confidence=params.get('min_confidence'),
         broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
         broken_level_break_pips=params.get('broken_level_break_pips', 15.0),
+        min_edge_pips=params.get('min_edge_pips', 2.0),
         enable_confidence_filter='min_confidence' in params,
         enable_broken_level_filter='broken_level_cooldown_hours' in params,
         df=df_slice,
@@ -1423,7 +1425,8 @@ def run_walk_forward(
     if param_grid is None:
         param_grid = {
             'min_confidence': [0.60, 0.65, 0.70],
-            'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+            'broken_level_cooldown_hours': [12.0, 24.0, 48.0],
+            'min_edge_pips': [0.0, 2.0, 4.0]
         }
 
     # Fetch data once
@@ -1550,6 +1553,7 @@ def run_walk_forward(
             min_confidence=test_param_dict.get('min_confidence'),
             broken_level_cooldown_hours=test_param_dict.get('broken_level_cooldown_hours'),
             broken_level_break_pips=test_param_dict.get('broken_level_break_pips', broken_level_break_pips),
+            min_edge_pips=test_param_dict.get('min_edge_pips', 2.0),
             enable_confidence_filter='min_confidence' in test_param_dict,
             enable_broken_level_filter='broken_level_cooldown_hours' in test_param_dict,
             df=test_df,
@@ -1681,6 +1685,7 @@ def run_walk_forward(
                 min_confidence=combo_params.get('min_confidence'),
                 broken_level_cooldown_hours=combo_params.get('broken_level_cooldown_hours'),
                 broken_level_break_pips=combo_params.get('broken_level_break_pips', broken_level_break_pips),
+                min_edge_pips=combo_params.get('min_edge_pips', 2.0),
                 enable_confidence_filter='min_confidence' in combo_params,
                 enable_broken_level_filter='broken_level_cooldown_hours' in combo_params,
                 df=test_df,
@@ -2197,7 +2202,8 @@ if __name__ == "__main__":
         print("\n>>> Running Grid Search (Parallel Processing)\n")
         param_grid = {
             'min_confidence': [0.60, 0.65, 0.70, 0.75],
-            'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+            'broken_level_cooldown_hours': [12.0, 24.0, 48.0],
+            'min_edge_pips': [0.0, 2.0, 4.0]
         }
 
         results_df = run_grid_search(
@@ -2219,7 +2225,7 @@ if __name__ == "__main__":
         print("=" * 70)
 
         if len(results_df) > 0:
-            display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'total_trades',
+            display_cols = ['min_confidence', 'broken_level_cooldown_hours', 'min_edge_pips', 'total_trades',
                            'win_rate', 'profit_factor', 'total_pnl_after_costs', 'max_drawdown']
             print(results_df[display_cols].head(10).to_string(index=False))
         else:
@@ -2231,7 +2237,8 @@ if __name__ == "__main__":
 
         param_grid = {
             'min_confidence': [0.60, 0.65, 0.70],
-            'broken_level_cooldown_hours': [12.0, 24.0, 48.0]
+            'broken_level_cooldown_hours': [12.0, 24.0, 48.0],
+            'min_edge_pips': [0.0, 2.0, 4.0]
         }
 
         wf_results = run_walk_forward(
@@ -2255,7 +2262,7 @@ if __name__ == "__main__":
         if len(wf_results) > 0:
             print("\nDetailed Walk-Forward Results:")
             print("=" * 70)
-            display_cols = ['split', 'param_min_confidence', 'param_broken_level_cooldown_hours',
+            display_cols = ['split', 'param_min_confidence', 'param_broken_level_cooldown_hours', 'param_min_edge_pips',
                            'train_profit_factor', 'test_profit_factor',
                            'train_total_trades', 'test_total_trades',
                            'test_total_pnl_after_costs']
