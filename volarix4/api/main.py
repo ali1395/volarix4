@@ -21,6 +21,12 @@ from volarix4.utils.helpers import calculate_pip_value
 from volarix4.config import SR_CONFIG, REJECTION_CONFIG, RISK_CONFIG, BACKTEST_PARITY_CONFIG
 from volarix4.utils.logger import setup_logger, log_signal_details
 from volarix4.utils.monitor import monitor
+from volarix4.utils.bar_validation import (
+    normalize_and_validate_bars,
+    log_bar_validation_summary,
+    validate_decision_bar_closed,
+    BarValidationError
+)
 
 # Initialize logger
 logger = setup_logger("volarix4", level="INFO")
@@ -275,51 +281,80 @@ def create_app() -> FastAPI:
                 f"Model: {request.model_type} (ignored - using S/R bounce)"
             )
 
-            # 1. Convert OHLCV data to DataFrame
-            # DEBUG: Log bars to check for data corruption
-            if len(request.data) > 0:
-                first_bar = request.data[0]
-                last_bar = request.data[-1]
-                logger.info(f"[DEBUG] Total bars received: {len(request.data)}")
-                logger.info(f"[DEBUG] First bar [0]: time={first_bar.time}, open={first_bar.open:.5f}, close={first_bar.close:.5f}")
-
-                # Check how many bars are zeros
-                zero_count = sum(1 for bar in request.data if bar.time == 0)
-                logger.info(f"[DEBUG] Bars with time=0: {zero_count} out of {len(request.data)}")
-
-                # Log a few bars to see the pattern
-                if len(request.data) >= 5:
-                    for i in [0, 1, 2, len(request.data)-2, len(request.data)-1]:
-                        bar = request.data[i]
-                        logger.info(f"[DEBUG] Bar [{i}]: time={bar.time}, open={bar.open:.5f}, close={bar.close:.5f}")
-
-                logger.info(f"[DEBUG] Last bar [{len(request.data)-1}]: time={last_bar.time}, open={last_bar.open:.5f}, close={last_bar.close:.5f}")
-
-            df = pd.DataFrame([{
-                'time': pd.to_datetime(bar.time, unit='s'),
+            # 1. Bar Validation (Parity Contract Enforcement)
+            # Convert request.data to dict format for validation
+            bars_dict = [{
+                'time': bar.time,
                 'open': bar.open,
                 'high': bar.high,
                 'low': bar.low,
                 'close': bar.close,
                 'volume': bar.volume
-            } for bar in request.data])
+            } for bar in request.data]
 
-            # DEBUG: Log converted timestamps
-            logger.info(f"[DEBUG] First timestamp after conversion: {df['time'].iloc[0]}")
-            logger.info(f"[DEBUG] Last timestamp after conversion: {df['time'].iloc[-1]}")
+            # Validate and normalize bars per Parity Contract
+            try:
+                validated_bars, bar_metadata = normalize_and_validate_bars(
+                    bars=bars_dict,
+                    timeframe=request.timeframe,
+                    min_bars=200,  # Per Parity Contract: exec200 lookback
+                    allow_gap_tolerance=True,
+                    max_gap_multiplier=5
+                )
+            except BarValidationError as e:
+                logger.error(f"Bar validation failed: {e}")
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "Bar Validation Failed",
+                        "message": str(e),
+                        "details": "Bars violate Parity Contract. Ensure MT5 EA sends only closed bars with strictly increasing timestamps."
+                    }
+                )
+
+            # Log validation summary (request echo debug)
+            log_bar_validation_summary(
+                logger=logger,
+                metadata=bar_metadata,
+                symbol=request.symbol,
+                timeframe=request.timeframe
+            )
+
+            # Validate decision bar is closed (not forming)
+            current_time = int(time.time())
+            validate_decision_bar_closed(
+                decision_bar_time=bar_metadata['decision_bar_time'],
+                current_time=current_time,
+                timeframe_seconds=bar_metadata['timeframe_seconds'],
+                logger=logger
+            )
+
+            # 2. Convert validated bars to DataFrame
+            df = pd.DataFrame([{
+                'time': pd.to_datetime(bar['time'], unit='s'),
+                'open': bar['open'],
+                'high': bar['high'],
+                'low': bar['low'],
+                'close': bar['close'],
+                'volume': bar['volume']
+            } for bar in validated_bars])
 
             log_signal_details(logger, "DATA_FETCH", {
-                'bars_count': len(df),
-                'start_date': str(df['time'].iloc[0]),
-                'end_date': str(df['time'].iloc[-1])
+                'bars_count': bar_metadata['bar_count'],
+                'start_date': str(bar_metadata['first_datetime']),
+                'end_date': str(bar_metadata['last_datetime']),
+                'decision_bar_time': str(bar_metadata['decision_datetime']),
+                'decision_bar_close': bar_metadata['decision_bar_close']
             })
 
-            # 2. Session filter (check if latest bar is in valid session)
-            last_bar_time = df.iloc[-1]['time']
-            session_valid = is_valid_session(last_bar_time)
+            # 3. Session filter (check if decision bar is in valid session)
+            # Use decision_bar_time from metadata (already validated as closed bar)
+            decision_bar_datetime = bar_metadata['decision_datetime']
+            session_valid = is_valid_session(decision_bar_datetime)
             log_signal_details(logger, "SESSION_CHECK", {
                 'valid': session_valid,
-                'timestamp': str(last_bar_time)
+                'timestamp': str(decision_bar_datetime),
+                'decision_bar_time': bar_metadata['decision_bar_time']
             })
 
             if not session_valid:
@@ -337,7 +372,7 @@ def create_app() -> FastAPI:
                     reason=f"Outside trading session (London/NY only)"
                 )
 
-            # 3. Trend Filter (EMA 20/50)
+            # 4. Trend Filter (EMA 20/50)
             trend_info = detect_trend(df, ema_fast=20, ema_slow=50)
             log_signal_details(logger, "TREND_FILTER", {
                 'trend': trend_info['trend'],
@@ -347,7 +382,7 @@ def create_app() -> FastAPI:
                 'reason': trend_info['reason']
             })
 
-            # 4. Detect S/R levels
+            # 5. Detect S/R levels
             pip_value = calculate_pip_value(request.symbol)
             levels = detect_sr_levels(
                 df,
@@ -375,7 +410,7 @@ def create_app() -> FastAPI:
                     reason="No significant S/R levels detected"
                 )
 
-            # 5. Validate S/R levels (filter broken levels)
+            # 6. Validate S/R levels (filter broken levels)
             logger.info("Checking Broken Level Filter...")
             sr_validator = SRLevelValidator(
                 pip_value=pip_value,
@@ -429,7 +464,7 @@ def create_app() -> FastAPI:
 
             logger.info(f"Valid S/R Levels after validation: {levels_after}")
 
-            # 6. Find rejection candles
+            # 7. Find rejection candles
             rejection = find_rejection_candle(
                 df,
                 levels,
@@ -520,7 +555,7 @@ def create_app() -> FastAPI:
                 'passed': True
             })
 
-            # 7. Validate signal aligns with trend (with exception for high confidence counter-trend)
+            # 8. Validate signal aligns with trend (with exception for high confidence counter-trend)
             logger.info("Checking Trend Filter...")
             current_close = df['close'].iloc[-1]
             logger.info(f"EMA Fast (20): {trend_info['ema_fast']:.5f}, EMA Slow (50): {trend_info['ema_slow']:.5f}")
@@ -604,7 +639,7 @@ def create_app() -> FastAPI:
             logger.info(f"Cooldown Filter: PASSED - No recent signals")
             log_signal_details(logger, "COOLDOWN_CHECK", {'in_cooldown': False})
 
-            # 8. Calculate trade setup with risk validation
+            # 9. Calculate trade setup with risk validation
             logger.info("Calculating Trade Setup and Risk Parameters...")
 
             trade_setup = calculate_trade_setup(
@@ -760,7 +795,7 @@ def create_app() -> FastAPI:
                 confidence=trade_setup['confidence']
             )
 
-            # 9. Return response
+            # 10. Return response
             return SignalResponse(**trade_setup)
 
         except Exception as e:
