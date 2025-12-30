@@ -22,10 +22,11 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from itertools import product
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from volarix4.core.data import fetch_ohlc, connect_mt5
+from volarix4.core.data import fetch_ohlc, connect_mt5, is_valid_session
 from volarix4.core.sr_levels import detect_sr_levels
 from volarix4.core.rejection import find_rejection_candle
 from volarix4.core.trade_setup import calculate_sl_tp
+from volarix4.core.trend_filter import detect_trend, validate_signal_with_trend
 from volarix4.utils.helpers import calculate_pip_value
 
 
@@ -610,20 +611,24 @@ def run_backtest(
         timeframe: str = "H1",
         bars: int = 1000,
         lookback_bars: int = 400,
-        # Cost parameters
+        # Cost parameters (match API BACKTEST_PARITY_CONFIG)
         spread_pips: float = 1.0,
         commission_per_side_per_lot: float = 7.0,
         slippage_pips: float = 0.5,
         lot_size: float = 1.0,
         usd_per_pip_per_lot: float = 10.0,
         starting_balance_usd: float = 10000.0,
-        # Filter parameters
-        min_confidence: Optional[float] = None,
-        broken_level_cooldown_hours: Optional[float] = None,
-        broken_level_break_pips: float = 15.0,
-        min_edge_pips: float = 2.0,
+        # Filter parameters (match API BACKTEST_PARITY_CONFIG)
+        min_confidence: float = 0.60,  # API default: 0.60
+        broken_level_cooldown_hours: float = 48.0,  # API default: 48.0
+        broken_level_break_pips: float = 15.0,  # API default: 15.0
+        min_edge_pips: float = 4.0,  # API default: 4.0
         enable_confidence_filter: bool = True,
         enable_broken_level_filter: bool = True,
+        enable_session_filter: bool = True,  # NEW: Match API session filter
+        enable_trend_filter: bool = True,  # NEW: Match API trend filter
+        enable_signal_cooldown: bool = True,  # NEW: Match API signal cooldown
+        signal_cooldown_hours: float = 2.0,  # NEW: Match API (2 hours)
         # Data
         df: Optional[pd.DataFrame] = None,
         enforce_bars_limit: bool = True,
@@ -679,13 +684,16 @@ def run_backtest(
         print(f"  Slippage: {slippage_pips} pips")
         print(f"  Lot Size: {lot_size}")
         print(f"  USD per pip per lot: ${usd_per_pip_per_lot}")
-        print(f"\nFilters:")
+        print(f"\nFilters (API Parity Mode):")
+        print(f"  Session Filter (London/NY): {'ON' if enable_session_filter else 'OFF'}")
+        print(f"  Trend Filter (EMA 20/50): {'ON' if enable_trend_filter else 'OFF'}")
         print(f"  Min Confidence: {min_confidence if enable_confidence_filter else 'OFF'}")
         if enable_broken_level_filter:
             print(f"  Broken Level Cooldown: {broken_level_cooldown_hours}h")
             print(f"  Broken Level Threshold: {broken_level_break_pips} pips")
         else:
             print("  Broken Level Filter: OFF")
+        print(f"  Signal Cooldown: {signal_cooldown_hours}h" if enable_signal_cooldown else "  Signal Cooldown: OFF")
         print(f"  Min Edge (pips): {min_edge_pips if min_edge_pips > 0 else 'OFF'}")
         print("=" * 70)
 
@@ -733,8 +741,13 @@ def run_backtest(
     open_trade: Optional[Trade] = None
     signals_generated = {"BUY": 0, "SELL": 0, "HOLD": 0}
     filter_rejections = {
+        "session": 0,  # NEW: Session filter
+        "trend": 0,  # NEW: Trend filter
+        "no_sr_levels": 0,  # NEW: No S/R levels found
         "confidence": 0,
         "broken_level": 0,
+        "trend_alignment": 0,  # NEW: Trend alignment filter
+        "signal_cooldown": 0,  # NEW: Signal cooldown
         "invalid_geometry": 0,
         "insufficient_edge": 0
     }
@@ -743,6 +756,9 @@ def run_backtest(
 
     # Broken level tracking: {level_price: (break_timestamp, level_type)}
     broken_levels: Dict[float, Tuple[datetime, str]] = {}
+
+    # Signal cooldown tracking: {symbol: last_signal_timestamp}
+    last_signal_time: Optional[datetime] = None
 
     # Walk forward bar by bar
     if verbose:
@@ -761,166 +777,226 @@ def run_backtest(
         # Generate signal only if no open trade
         if not open_trade:
             historical_data = df.iloc[:i + 1].copy()
+            decision_bar = current_bar  # Decision made at current (closed) bar
 
-            # Run S/R detection
+            # FILTER 1: Session Filter (check if decision bar is in valid session)
+            # Match API: volarix4/api/main.py:350-373
+            if enable_session_filter:
+                if not is_valid_session(decision_bar['time']):
+                    filter_rejections["session"] += 1
+                    signals_generated["HOLD"] += 1
+                    continue
+
+            # FILTER 2: Trend Filter (EMA 20/50)
+            # Match API: volarix4/api/main.py:375-383
+            if enable_trend_filter:
+                trend_info = detect_trend(historical_data, ema_fast=20, ema_slow=50)
+                # Note: Trend filter doesn't block here - it's applied after rejection
+                # Store for later use in trend alignment validation
+            else:
+                trend_info = None
+
+            # FILTER 3: S/R Detection
+            # Match API: volarix4/api/main.py:385-411
             levels = detect_sr_levels(
                 historical_data.tail(lookback_bars),
                 min_score=60.0,
                 pip_value=pip_value
             )
 
-            if levels:
-                # Mark broken levels on current bar (check ALL levels on EVERY bar)
-                if enable_broken_level_filter:
-                    for level_dict in levels:
-                        level_price = round(level_dict['level'], 5)
-                        level_type = level_dict['type']  # 'support' or 'resistance'
+            if not levels:
+                filter_rejections["no_sr_levels"] += 1
+                signals_generated["HOLD"] += 1
+                continue
 
-                        # Check if level was broken by current bar close
-                        if level_type == 'support':
-                            if current_bar['close'] < (level_price - broken_level_break_pips * pip_value):
-                                # Support broken, mark it
-                                broken_levels[level_price] = (current_time, level_type)
-                        elif level_type == 'resistance':
-                            if current_bar['close'] > (level_price + broken_level_break_pips * pip_value):
-                                # Resistance broken, mark it
-                                broken_levels[level_price] = (current_time, level_type)
+            # FILTER 4: Broken Level Filter (mark and filter broken levels)
+            # Match API: volarix4/api/main.py:413-465
+            if enable_broken_level_filter:
+                # Mark broken levels on current bar (check ALL levels on EVERY bar)
+                for level_dict in levels:
+                    level_price = round(level_dict['level'], 5)
+                    level_type = level_dict['type']  # 'support' or 'resistance'
+
+                    # Check if level was broken by current bar close
+                    if level_type == 'support':
+                        if current_bar['close'] < (level_price - broken_level_break_pips * pip_value):
+                            # Support broken, mark it
+                            broken_levels[level_price] = (current_time, level_type)
+                    elif level_type == 'resistance':
+                        if current_bar['close'] > (level_price + broken_level_break_pips * pip_value):
+                            # Resistance broken, mark it
+                            broken_levels[level_price] = (current_time, level_type)
 
                 # Apply broken level filter (remove levels in cooldown)
-                if enable_broken_level_filter and broken_level_cooldown_hours:
-                    valid_levels = []
-                    for level_dict in levels:
-                        level_price = round(level_dict['level'], 5)
+                valid_levels = []
+                for level_dict in levels:
+                    level_price = round(level_dict['level'], 5)
 
-                        # Check if level is in cooldown
-                        if level_price in broken_levels:
-                            break_time, _ = broken_levels[level_price]
-                            time_since_break = current_time - break_time
+                    # Check if level is in cooldown
+                    if level_price in broken_levels:
+                        break_time, _ = broken_levels[level_price]
+                        time_since_break = current_time - break_time
 
-                            if time_since_break < timedelta(hours=broken_level_cooldown_hours):
-                                # Still in cooldown
-                                continue
-                            else:
-                                # Cooldown expired, remove
-                                del broken_levels[level_price]
+                        if time_since_break < timedelta(hours=broken_level_cooldown_hours):
+                            # Still in cooldown
+                            continue
+                        else:
+                            # Cooldown expired, remove
+                            del broken_levels[level_price]
 
-                        valid_levels.append(level_dict)
+                    valid_levels.append(level_dict)
 
-                    if len(valid_levels) < len(levels):
-                        filter_rejections["broken_level"] += (len(levels) - len(valid_levels))
+                if len(valid_levels) < len(levels):
+                    filter_rejections["broken_level"] += (len(levels) - len(valid_levels))
 
-                    levels = valid_levels
+                levels = valid_levels
 
-                if levels:
-                    # Search for rejection
-                    rejection = find_rejection_candle(
-                        historical_data.tail(20),
-                        levels,
-                        lookback=5,
-                        pip_value=pip_value
-                    )
-
-                    if rejection:
-                        # Apply confidence filter
-                        confidence = rejection.get('confidence', 1.0)
-
-                        if enable_confidence_filter and min_confidence is not None:
-                            if confidence < min_confidence:
-                                filter_rejections["confidence"] += 1
-                                signals_generated["HOLD"] += 1
-                                continue
-
-                        direction = rejection['direction']
-                        signals_generated[direction] += 1
-
-                        # Create trade (enter on next bar open)
-                        next_bar_idx = i + 1
-                        if next_bar_idx < len(df):
-                            entry_bar = df.iloc[next_bar_idx]
-                            actual_entry = entry_bar['open']
-
-                            # Calculate trade setup using ACTUAL entry price (next bar open)
-                            trade_params = calculate_sl_tp(
-                                entry=actual_entry,
-                                level=rejection['level'],
-                                direction=direction,
-                                sl_pips_beyond=10.0,
-                                pip_value=pip_value
-                            )
-
-                            # Sanity check: validate SL/TP geometry
-                            if not levels_sane(
-                                entry=actual_entry,
-                                sl=trade_params['sl'],
-                                tp1=trade_params['tp1'],
-                                tp2=trade_params['tp2'],
-                                tp3=trade_params['tp3'],
-                                direction=direction
-                            ):
-                                # Invalid geometry - skip this trade
-                                filter_rejections["invalid_geometry"] += 1
-                                signals_generated["HOLD"] += 1
-                                continue
-
-                            # Calculate round-trip costs in pips
-                            commission_pips = (2 * commission_per_side_per_lot * lot_size) / usd_per_pip_per_lot
-                            total_cost_pips = spread_pips + (2 * slippage_pips) + commission_pips
-
-                            # Calculate TP1 distance in pips
-                            if direction == "BUY":
-                                tp1_distance_pips = (trade_params['tp1'] - actual_entry) / pip_value
-                            else:  # SELL
-                                tp1_distance_pips = (actual_entry - trade_params['tp1']) / pip_value
-
-                            # Check minimum edge after costs
-                            if tp1_distance_pips <= total_cost_pips + min_edge_pips:
-                                # Insufficient edge - TP1 would not be profitable after costs
-                                filter_rejections["insufficient_edge"] += 1
-                                signals_generated["HOLD"] += 1
-                                continue
-
-                            # Create trade with validated parameters
-                            open_trade = Trade(
-                                entry_time=entry_bar['time'],
-                                direction=direction,
-                                entry=actual_entry,
-                                sl=trade_params['sl'],
-                                tp1=trade_params['tp1'],
-                                tp2=trade_params['tp2'],
-                                tp3=trade_params['tp3'],
-                                pip_value=pip_value,
-                                spread_pips=spread_pips,
-                                slippage_pips=slippage_pips,
-                                commission_per_side_per_lot=commission_per_side_per_lot,
-                                lot_size=lot_size
-                            )
-
-                            # Populate trade context
-                            open_trade.rejection_confidence = confidence
-                            open_trade.level_price = rejection['level']
-                            open_trade.level_type = rejection.get('level_type', 'unknown')
-
-                            # Calculate SL/TP in pips (using actual_entry)
-                            if direction == "BUY":
-                                open_trade.sl_pips = (actual_entry - trade_params['sl']) / pip_value
-                                open_trade.tp1_pips = (trade_params['tp1'] - actual_entry) / pip_value
-                            else:  # SELL
-                                open_trade.sl_pips = (trade_params['sl'] - actual_entry) / pip_value
-                                open_trade.tp1_pips = (actual_entry - trade_params['tp1']) / pip_value
-
-                            # Time context
-                            open_trade.hour_of_day = entry_bar['time'].hour
-                            open_trade.day_of_week = entry_bar['time'].dayofweek
-
-                            # Calculate ATR at entry (using data up to current bar)
-                            df_for_atr = df.iloc[:next_bar_idx+1]
-                            open_trade.atr_pips_14 = calculate_atr_pips(df_for_atr, period=14, pip_value=pip_value)
-                    else:
-                        signals_generated["HOLD"] += 1
-                else:
+                if not levels:
                     signals_generated["HOLD"] += 1
-            else:
+                    continue
+
+            # FILTER 5: Rejection Search
+            # Match API: volarix4/api/main.py:467-556
+            rejection = find_rejection_candle(
+                historical_data.tail(20),
+                levels,
+                lookback=5,
+                pip_value=pip_value
+            )
+
+            if not rejection:
                 signals_generated["HOLD"] += 1
+                continue
+
+            # FILTER 6: Confidence Filter
+            # Match API: volarix4/api/main.py:547-556 (embedded in rejection)
+            confidence = rejection.get('confidence', 1.0)
+            direction = rejection['direction']
+
+            if enable_confidence_filter:
+                if confidence < min_confidence:
+                    filter_rejections["confidence"] += 1
+                    signals_generated["HOLD"] += 1
+                    continue
+
+            # FILTER 7: Trend Alignment Validation (with bypass for high confidence)
+            # Match API: volarix4/api/main.py:558-626
+            if enable_trend_filter and trend_info is not None:
+                # Check if signal aligns with trend, allow bypass for high confidence
+                trend_result = validate_signal_with_trend(
+                    signal_direction=direction,
+                    trend_info=trend_info,
+                    confidence=confidence,
+                    min_confidence_for_bypass=0.75,  # Match API
+                    logger=None  # No logger in backtest
+                )
+
+                if not trend_result['allow_trade']:
+                    filter_rejections["trend_alignment"] += 1
+                    signals_generated["HOLD"] += 1
+                    continue
+
+            # FILTER 8: Signal Cooldown (per-symbol, 2 hours)
+            # Match API: volarix4/api/main.py:628-640
+            if enable_signal_cooldown:
+                if last_signal_time is not None:
+                    time_since_last_signal = current_time - last_signal_time
+                    if time_since_last_signal < timedelta(hours=signal_cooldown_hours):
+                        filter_rejections["signal_cooldown"] += 1
+                        signals_generated["HOLD"] += 1
+                        continue
+
+            # Signal passed all filters - record it
+            signals_generated[direction] += 1
+
+            # FILTER 9: Trade Setup Calculation and Min Edge Validation
+            # Match API: volarix4/api/main.py:642-796
+            # Create trade (enter on next bar open)
+            next_bar_idx = i + 1
+            if next_bar_idx < len(df):
+                entry_bar = df.iloc[next_bar_idx]
+                actual_entry = entry_bar['open']
+
+                # Calculate trade setup using ACTUAL entry price (next bar open)
+                trade_params = calculate_sl_tp(
+                    entry=actual_entry,
+                    level=rejection['level'],
+                    direction=direction,
+                    sl_pips_beyond=10.0,
+                    pip_value=pip_value
+                )
+
+                # Sanity check: validate SL/TP geometry
+                if not levels_sane(
+                    entry=actual_entry,
+                    sl=trade_params['sl'],
+                    tp1=trade_params['tp1'],
+                    tp2=trade_params['tp2'],
+                    tp3=trade_params['tp3'],
+                    direction=direction
+                ):
+                    # Invalid geometry - skip this trade
+                    filter_rejections["invalid_geometry"] += 1
+                    signals_generated["HOLD"] += 1
+                    continue
+
+                # Calculate round-trip costs in pips
+                commission_pips = (2 * commission_per_side_per_lot * lot_size) / usd_per_pip_per_lot
+                total_cost_pips = spread_pips + (2 * slippage_pips) + commission_pips
+
+                # Calculate TP1 distance in pips
+                if direction == "BUY":
+                    tp1_distance_pips = (trade_params['tp1'] - actual_entry) / pip_value
+                else:  # SELL
+                    tp1_distance_pips = (actual_entry - trade_params['tp1']) / pip_value
+
+                # Check minimum edge after costs
+                if tp1_distance_pips <= total_cost_pips + min_edge_pips:
+                    # Insufficient edge - TP1 would not be profitable after costs
+                    filter_rejections["insufficient_edge"] += 1
+                    signals_generated["HOLD"] += 1
+                    continue
+
+                # Update signal cooldown timestamp (signal accepted)
+                if enable_signal_cooldown:
+                    last_signal_time = current_time
+
+                # Create trade with validated parameters
+                open_trade = Trade(
+                    entry_time=entry_bar['time'],
+                    direction=direction,
+                    entry=actual_entry,
+                    sl=trade_params['sl'],
+                    tp1=trade_params['tp1'],
+                    tp2=trade_params['tp2'],
+                    tp3=trade_params['tp3'],
+                    pip_value=pip_value,
+                    spread_pips=spread_pips,
+                    slippage_pips=slippage_pips,
+                    commission_per_side_per_lot=commission_per_side_per_lot,
+                    lot_size=lot_size
+                )
+
+                # Populate trade context
+                open_trade.rejection_confidence = confidence
+                open_trade.level_price = rejection['level']
+                open_trade.level_type = rejection.get('level_type', 'unknown')
+
+                # Calculate SL/TP in pips (using actual_entry)
+                if direction == "BUY":
+                    open_trade.sl_pips = (actual_entry - trade_params['sl']) / pip_value
+                    open_trade.tp1_pips = (trade_params['tp1'] - actual_entry) / pip_value
+                else:  # SELL
+                    open_trade.sl_pips = (trade_params['sl'] - actual_entry) / pip_value
+                    open_trade.tp1_pips = (actual_entry - trade_params['tp1']) / pip_value
+
+                # Time context
+                open_trade.hour_of_day = entry_bar['time'].hour
+                open_trade.day_of_week = entry_bar['time'].dayofweek
+
+                # Calculate ATR at entry (using data up to current bar)
+                df_for_atr = df.iloc[:next_bar_idx+1]
+                open_trade.atr_pips_14 = calculate_atr_pips(df_for_atr, period=14, pip_value=pip_value)
 
     # Close any remaining open trade
     if open_trade:
