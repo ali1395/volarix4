@@ -22,40 +22,70 @@ Volarix 4 follows a **modular, pipeline-based architecture** where each componen
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     SIGNAL GENERATION PIPELINE                  │
+│                          (10-Stage Filter)                      │
 │                                                                 │
-│  1. DATA FETCH       ┌──────────────────────────┐             │
-│     (data.py)        │ MT5 Connection           │             │
-│                      │ OHLCV Data Retrieval     │             │
-│                      └───────────┬──────────────┘             │
-│                                  │                             │
-│  2. SESSION CHECK                ▼                             │
-│     (data.py)        ┌──────────────────────────┐             │
-│                      │ Validate Trading Hours   │             │
-│                      │ London/NY Session Only   │             │
-│                      └───────────┬──────────────┘             │
-│                                  │                             │
-│  3. S/R DETECTION                ▼                             │
-│     (sr_levels.py)   ┌──────────────────────────┐             │
-│                      │ Find Swing Highs/Lows    │             │
-│                      │ Cluster Levels           │             │
-│                      │ Score by Quality         │             │
-│                      └───────────┬──────────────┘             │
-│                                  │                             │
-│  4. REJECTION SEARCH             ▼                             │
-│     (rejection.py)   ┌──────────────────────────┐             │
-│                      │ Find Pin Bars            │             │
-│                      │ Validate Rejection       │             │
-│                      │ Calculate Confidence     │             │
-│                      └───────────┬──────────────┘             │
-│                                  │                             │
-│  5. TRADE SETUP                  ▼                             │
-│     (trade_setup.py) ┌──────────────────────────┐             │
-│                      │ Calculate Entry/SL/TP    │             │
-│                      │ Apply Position Sizing    │             │
-│                      │ Format Response          │             │
-│                      └───────────┬──────────────┘             │
-│                                  │                             │
-└──────────────────────────────────┼─────────────────────────────┘
+│  1. BAR VALIDATION          ┌──────────────────────────┐       │
+│     (bar_validation.py)     │ Normalize & Validate     │       │
+│                             │ Check Timestamps         │       │
+│                             │ Verify Closed Bars       │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  2. SESSION FILTER          ▼                                   │
+│     (data.py)               ┌──────────────────────────┐       │
+│                             │ Validate Trading Hours   │       │
+│                             │ London/NY Session Only   │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  3. TREND FILTER            ▼                                   │
+│     (trend_filter.py)       ┌──────────────────────────┐       │
+│                             │ Calculate EMA 20/50      │       │
+│                             │ Detect Trend Direction   │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  4. S/R DETECTION           ▼                                   │
+│     (sr_levels.py)          ┌──────────────────────────┐       │
+│                             │ Find Swing Highs/Lows    │       │
+│                             │ Cluster Levels           │       │
+│                             │ Score by Quality         │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  5. BROKEN LEVEL FILTER     ▼                                   │
+│     (sr_validation.py)      ┌──────────────────────────┐       │
+│                             │ Track Broken Levels      │       │
+│                             │ Apply 48h Cooldown       │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  6. REJECTION SEARCH        ▼                                   │
+│     (rejection.py)          ┌──────────────────────────┐       │
+│                             │ Find Pin Bars            │       │
+│                             │ Validate Rejection       │       │
+│                             │ Calculate Confidence     │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  7. CONFIDENCE FILTER       ▼                                   │
+│     (main.py)               ┌──────────────────────────┐       │
+│                             │ Check >= 0.60 Threshold  │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  8. TREND ALIGNMENT         ▼                                   │
+│     (trend_filter.py)       ┌──────────────────────────┐       │
+│                             │ Validate Signal vs Trend │       │
+│                             │ Bypass if Conf >= 0.75   │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│  9. SIGNAL COOLDOWN         ▼                                   │
+│     (main.py)               ┌──────────────────────────┐       │
+│                             │ Check 2h per Symbol      │       │
+│                             │ Prevent Over-Trading     │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+│ 10. MIN EDGE FILTER         ▼                                   │
+│     (trade_setup.py)        ┌──────────────────────────┐       │
+│                             │ Validate TP > Costs + 4  │       │
+│                             │ Ensure Profitable Edge   │       │
+│                             └───────────┬──────────────┘       │
+│                                         │                       │
+└─────────────────────────────────────────┼───────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -200,7 +230,103 @@ TP2: 1.08520 + (3 pips × 2R) = 1.08580
 TP3: 1.08520 + (3 pips × 3R) = 1.08610
 ```
 
-### 6. Configuration Module (`config.py`)
+### 6. Bar Validation Module (`bar_validation.py`)
+
+**Responsibility**: Validate and normalize OHLCV bar data
+
+**Key Functions**:
+- Verify strictly increasing timestamps (oldest → newest)
+- Validate decision bar is closed (not forming)
+- Check minimum 200 bars required
+- Normalize bar data structure
+
+**Validation Flow**:
+```python
+validate_bars(bars)
+  → Check timestamps are strictly increasing
+  → Verify last bar is closed (time_since_last_bar >= timeframe_seconds)
+  → Validate minimum lookback (400 bars per Parity Contract)
+  → Return normalized DataFrame
+```
+
+**Critical for Parity**: Ensures backtest and API use identical bar data (closed bars only, no forming bars).
+
+### 7. Trend Filter Module (`trend_filter.py`)
+
+**Responsibility**: Detect market trend using EMA crossover
+
+**Algorithm**:
+```python
+# Calculate EMAs
+ema_fast = df['close'].ewm(span=20).mean()  # 20-period EMA
+ema_slow = df['close'].ewm(span=50).mean()  # 50-period EMA
+
+# Detect trend
+if ema_fast > ema_slow:
+    trend = "UPTREND"   # Allow BUY, reject SELL (unless high confidence)
+elif ema_fast < ema_slow:
+    trend = "DOWNTREND" # Allow SELL, reject BUY (unless high confidence)
+else:
+    trend = "RANGING"   # Allow both
+```
+
+**High Confidence Bypass**:
+- If confidence >= 0.75, allow counter-trend trades
+- Rationale: Very strong rejection patterns may overcome trend
+
+### 8. Broken Level Filter (`sr_validation.py`)
+
+**Responsibility**: Track S/R levels that have been broken and apply cooldown
+
+**Why It Matters**:
+- Once support becomes resistance (or vice versa), reliability decreases
+- Need time for new level psychology to form
+- Prevents false signals at recently broken levels
+
+**Broken Level Criteria**:
+```python
+# Support Broken
+if price_low < support - (15 pips × pip_value):
+    mark_broken(support, timestamp)
+    apply_cooldown(48 hours)
+
+# Resistance Broken
+if price_high > resistance + (15 pips × pip_value):
+    mark_broken(resistance, timestamp)
+    apply_cooldown(48 hours)
+```
+
+**Cooldown Period**: 48 hours (configurable)
+
+### 9. Confidence & Edge Filters (`main.py`, `trade_setup.py`)
+
+**Confidence Filter** (main.py):
+- Minimum threshold: 0.60 (default, configurable via API)
+- Rejects signals below confidence threshold
+- Balances quality vs quantity (0.60 optimized via backtest)
+
+**Signal Cooldown** (main.py):
+- Enforces 2-hour delay between signals per symbol
+- Prevents over-trading and revenge trading
+- Tracks last signal time per symbol in-memory
+
+**Min Edge Filter** (trade_setup.py):
+- Ensures TP1 distance > total_cost_pips + min_edge_pips
+- Default min_edge: 4.0 pips after costs
+- Cost model includes spread, slippage, and commission
+
+**Cost Calculation**:
+```python
+# Round-trip costs
+commission_pips = (2 × commission_per_side × lot_size) / usd_per_pip_per_lot
+total_cost_pips = spread_pips + (2 × slippage_pips) + commission_pips
+
+# Edge requirement
+if TP1_distance_pips <= total_cost_pips + min_edge_pips:
+    return HOLD  # Insufficient profitable edge
+```
+
+### 10. Configuration Module (`config.py`)
 
 **Responsibility**: Centralized configuration management
 
@@ -284,7 +410,7 @@ monitor.print_stats()
 
 ## Data Flow
 
-### Request Processing Flow
+### Request Processing Flow (10-Stage Pipeline)
 
 ```
 1. HTTP Request arrives
@@ -295,32 +421,64 @@ monitor.print_stats()
    ├─ Check required fields (symbol, timeframe, data)
    └─ Parse OHLCV bars
 
-3. Data Processing
-   └─ Convert bars to pandas DataFrame
+3. Bar Validation
+   ├─ Verify strictly increasing timestamps
+   ├─ Check last bar is closed (not forming)
+   └─ If invalid → Return 422 ERROR
 
-4. Session Validation
-   ├─ Check timestamp of latest bar
-   └─ If outside session → Return HOLD
+4. Session Filter
+   ├─ Check timestamp of decision bar
+   └─ If outside London/NY → Return HOLD
 
-5. S/R Detection
+5. Trend Filter
+   ├─ Calculate EMA 20/50
+   ├─ Detect trend direction
+   └─ Store for trend alignment check (stage 9)
+
+6. S/R Detection
    ├─ Find swing highs/lows
    ├─ Cluster levels
-   ├─ Score levels
+   ├─ Score levels (min score 60)
    └─ If no levels → Return HOLD
 
-6. Rejection Search
+7. Broken Level Filter
+   ├─ Check broken level cooldown (48h)
+   ├─ Remove levels in cooldown period
+   └─ If all broken → Return HOLD
+
+8. Rejection Search
    ├─ Check recent candles (last 5)
-   ├─ Test against each S/R level
+   ├─ Test against valid S/R levels
    ├─ Validate rejection criteria
+   ├─ Calculate confidence score
    └─ If no rejection → Return HOLD
 
-7. Trade Setup
-   ├─ Calculate SL/TP levels
-   ├─ Apply position sizing
-   └─ Format response
+9. Confidence Filter
+   ├─ Check confidence >= min_confidence (0.60)
+   └─ If too low → Return HOLD
 
-8. Response
-   └─ Return signal (BUY/SELL/HOLD) with risk parameters
+10. Trend Alignment
+    ├─ Validate signal aligns with trend
+    ├─ BYPASS if confidence >= 0.75
+    └─ If misaligned → Return HOLD
+
+11. Signal Cooldown
+    ├─ Check last signal time for symbol
+    ├─ Enforce 2-hour minimum delay
+    └─ If in cooldown → Return HOLD
+
+12. Min Edge Filter
+    ├─ Calculate total costs (spread + slippage + commission)
+    ├─ Check TP1 distance > costs + min_edge_pips (4.0)
+    └─ If insufficient edge → Return HOLD
+
+13. Trade Setup
+    ├─ Calculate SL/TP levels
+    ├─ Apply position sizing
+    └─ Format response
+
+14. Response
+    └─ Return signal (BUY/SELL/HOLD) with risk parameters
 ```
 
 ## File Structure

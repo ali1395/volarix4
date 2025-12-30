@@ -587,8 +587,8 @@ If you encounter issues not covered here:
 
 1. Check `E:\Volarix4Bridge_Debug.txt`
 2. Check `logs/volarix4_YYYY-MM-DD.log`
-3. Enable debug logging in API (see main.py lines 232-249)
-4. Run test: `python test_api.py`
+3. Enable debug logging in API (see volarix4/api/main.py)
+4. Run test: `python tests/test_api.py`
 5. Post issue with logs to GitHub
 
 ## Summary

@@ -49,12 +49,12 @@
 
 6. **Run the API**:
    ```bash
-   python start.py
+   python scripts/start.py
    ```
 
    Or directly:
    ```bash
-   python main.py
+   python volarix4/run.py
    ```
 
 7. **Verify Installation**:
@@ -103,16 +103,16 @@ git checkout -b feature/your-feature
 
 # 2. Make changes to code
 
-# 3. Test individual modules
-python sr_levels.py        # Test S/R detection
-python rejection.py        # Test rejection patterns
-python trade_setup.py      # Test trade setup
+# 3. Test individual modules (import and run functions from package)
+from volarix4.core import sr_levels      # Test S/R detection
+from volarix4.core import rejection      # Test rejection patterns
+from volarix4.core import trade_setup    # Test trade setup
 
 # 4. Test API
-python test_api.py
+python tests/test_api.py
 
 # 5. Run backtest
-python backtest.py
+python tests/backtest.py
 
 # 6. Commit changes
 git add .
@@ -172,7 +172,7 @@ python monitor.py
 
 **Full test suite**:
 ```bash
-python test_api.py
+python tests/test_api.py
 ```
 
 Tests include:
@@ -187,7 +187,7 @@ Tests include:
 
 **Development backtest** (not for production):
 ```bash
-python backtest.py
+python tests/backtest.py
 ```
 
 Output:
@@ -275,10 +275,10 @@ RISK_CONFIG = {
 ```bash
 # 1. Edit config.py
 # 2. Restart API
-python start.py
+python scripts/start.py
 
 # 3. Run backtest to validate
-python backtest.py
+python tests/backtest.py
 ```
 
 ## Adding New Features
@@ -345,14 +345,14 @@ if TREND_FILTER_CONFIG["enabled"]:
 **Step 4**: Test the change:
 
 ```bash
-# Test trend detection
-python utils.py
+# Test trend detection (import and run from package)
+from volarix4.utils import helpers
 
 # Test API with new filter
-python test_api.py
+python tests/test_api.py
 
 # Backtest with trend filter
-python backtest.py
+python tests/backtest.py
 ```
 
 **Step 5**: Document the change in `docs/03-STRATEGY-LOGIC.md`.
@@ -410,7 +410,7 @@ def find_rejection_candle(df: pd.DataFrame, levels: List[Dict],
 
 **Method 1**: Environment variable:
 ```bash
-DEBUG=true python main.py
+DEBUG=true python volarix4/run.py
 ```
 
 **Method 2**: Change log level in code:
@@ -524,7 +524,7 @@ def test_custom_scenario():
 Before deploying changes, run backtest:
 
 ```bash
-python backtest.py
+python tests/backtest.py
 ```
 
 Compare results to baseline:
@@ -532,23 +532,90 @@ Compare results to baseline:
 - Profit factor should be > 1.3
 - Max drawdown should be reasonable
 
+### Parity Testing
+
+**CRITICAL**: Always run parity tests before deploying changes to ensure backtest and API remain synchronized.
+
+#### Running Parity Tests
+
+```bash
+# Install test dependencies
+pip install -r tests/requirements.txt
+
+# Run all parity tests
+python -m pytest tests/test_backtest_api_parity.py -v
+```
+
+**Expected Output**:
+```
+tests/test_backtest_api_parity.py::test_backtest_api_parity[trade_accepted] PASSED
+tests/test_backtest_api_parity.py::test_backtest_api_parity[rejected_session] PASSED
+tests/test_backtest_api_parity.py::test_backtest_api_parity[rejected_confidence] PASSED
+tests/test_backtest_api_parity.py::test_backtest_api_parity[rejected_insufficient_edge] PASSED
+tests/test_backtest_api_parity.py::test_parameter_defaults_match PASSED
+tests/test_backtest_api_parity.py::test_session_hours_unchanged PASSED
+tests/test_backtest_api_parity.py::test_ema_periods_unchanged PASSED
+tests/test_backtest_api_parity.py::test_cost_model_formula_unchanged PASSED
+
+======================= 8 passed in 2.34s =======================
+```
+
+#### What Parity Tests Prevent
+
+❌ **Bar indexing changes** (forming bar inclusion at index 0)
+❌ **Session hour changes** (London 3-11, NY 8-22 EST)
+❌ **EMA period changes** (20/50 periods)
+❌ **Cost model changes** (formula or defaults)
+❌ **Parameter default changes** (min_confidence, min_edge, etc.)
+❌ **Filter order changes** (pipeline sequence)
+
+#### When Tests Fail
+
+If parity tests fail:
+
+1. **If bug**: Fix the code to match expected behavior
+2. **If intentional change**: Update fixtures and validation tests
+3. **Document change**: Update `docs/PARITY_TESTS.md` and `docs/BACKTEST_PARITY.md`
+
+#### Adding New Test Fixtures
+
+To create a new parity test fixture:
+
+```bash
+# 1. Extract bars from a specific scenario using MT5
+python tests/extract_bars_from_mt5.py
+
+# 2. Run backtest on those bars to get expected output
+python tests/backtest.py --single-test
+
+# 3. Call API with same bars to get actual output
+curl -X POST http://localhost:8000/signal -d @test_bars.json
+
+# 4. Create fixture JSON combining bars + expected output
+# See tests/fixtures/*.json for examples
+
+# 5. Add fixture to test_backtest_api_parity.py parametrize list
+```
+
+**See**: `docs/PARITY_TESTS.md` for comprehensive parity testing documentation.
+
 ## Deployment
 
 ### Local Deployment
 
 **Option 1**: Direct execution:
 ```bash
-python main.py
+python volarix4/run.py
 ```
 
 **Option 2**: Using uvicorn:
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn volarix4.api.main:app --host 0.0.0.0 --port 8000
 ```
 
 **Option 3**: With auto-reload (development):
 ```bash
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+uvicorn volarix4.api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ### Production Deployment

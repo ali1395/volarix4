@@ -110,24 +110,65 @@ Content-Type: application/json
       "volume": 1000                     // Volume (integer)
     }
   ],
-  "execution_timeframe": "string",       // Optional: Explicit execution TF
-  "context_timeframe": "string",         // Optional: Context TF (ignored in V4)
-  "context_data": [],                    // Optional: Context bars (ignored in V4)
-  "model_type": "string"                 // Optional: Model type (ignored in V4)
+
+  // Optional: Legacy V3 compatibility (ignored in V4)
+  "execution_timeframe": "string",       // Explicit execution TF (defaults to timeframe)
+  "context_timeframe": "string",         // Context TF (ignored in V4)
+  "context_data": [],                    // Context bars (ignored in V4)
+  "model_type": "string",                // Model type (ignored in V4)
+
+  // Optional: Strategy parameters (override defaults)
+  "min_confidence": 0.60,                // Minimum confidence threshold (0.0-1.0)
+  "broken_level_cooldown_hours": 48.0,   // Hours to wait after level break
+  "broken_level_break_pips": 15.0,       // Pips beyond level = broken
+  "min_edge_pips": 4.0,                  // Min profitable edge after costs
+
+  // Optional: Cost model parameters (override defaults)
+  "spread_pips": 1.0,                    // Broker spread in pips
+  "slippage_pips": 0.5,                  // Expected slippage per side
+  "commission_per_side_per_lot": 7.0,    // USD commission per lot per side
+  "usd_per_pip_per_lot": 10.0,           // Standard lot pip value
+  "lot_size": 1.0                        // Lot size for commission calc
 }
 ```
 
 **Field Descriptions**:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `symbol` | string | Yes | Trading pair symbol (e.g., "EURUSD", "GBPUSD") |
-| `timeframe` | string | Yes | Chart timeframe (M1, M5, M15, M30, H1, H4, D1, W1) |
-| `data` | array | Yes | OHLCV bars (minimum 400 recommended for S/R detection) |
-| `execution_timeframe` | string | No | Override timeframe (defaults to `timeframe`) |
-| `context_timeframe` | string | No | Multi-TF context (Volarix 3 compatibility, ignored) |
-| `context_data` | array | No | Context TF bars (Volarix 3 compatibility, ignored) |
-| `model_type` | string | No | Model type (Volarix 3 compatibility, ignored) |
+**Required Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `symbol` | string | Trading pair symbol (e.g., "EURUSD", "GBPUSD") |
+| `timeframe` | string | Chart timeframe (M1, M5, M15, M30, H1, H4, D1, W1) |
+| `data` | array | OHLCV bars (minimum 400 recommended for S/R detection) |
+
+**Optional Fields (Legacy V3 Compatibility):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `execution_timeframe` | string | Override timeframe (defaults to `timeframe`) |
+| `context_timeframe` | string | Multi-TF context (Volarix 3 compatibility, ignored) |
+| `context_data` | array | Context TF bars (Volarix 3 compatibility, ignored) |
+| `model_type` | string | Model type (Volarix 3 compatibility, ignored) |
+
+**Optional Fields (Strategy Parameters):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `min_confidence` | float | 0.60 | Minimum confidence score to accept signal (0.0-1.0) |
+| `broken_level_cooldown_hours` | float | 48.0 | Hours to exclude broken S/R levels from consideration |
+| `broken_level_break_pips` | float | 15.0 | Pips beyond level to consider it "broken" |
+| `min_edge_pips` | float | 4.0 | Minimum profitable pips after all costs |
+
+**Optional Fields (Cost Model Parameters):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `spread_pips` | float | 1.0 | Bid/ask spread in pips |
+| `slippage_pips` | float | 0.5 | Expected slippage per order (one-way) |
+| `commission_per_side_per_lot` | float | 7.0 | Commission in USD per lot per side |
+| `usd_per_pip_per_lot` | float | 10.0 | Dollar value per pip for 1 standard lot |
+| `lot_size` | float | 1.0 | Lot size for commission calculation |
 
 **OHLCV Bar Schema**:
 
@@ -325,11 +366,17 @@ console.log(`Signal: ${signal.signal}`);
 }
 ```
 - **Meaning**: No valid trading setup, stay out
-- **Common Reasons**:
-  - Outside trading session (London/NY)
-  - No significant S/R levels detected
-  - No rejection pattern found
-  - Error during processing
+- **Common HOLD Rejection Reasons** (10-Stage Pipeline):
+  1. `"Invalid bars (timestamps not increasing)"`
+  2. `"Outside trading session (London/NY only)"`
+  3. `"No significant S/R levels detected (score >= 60)"`
+  4. `"All S/R levels broken or in cooldown period (48h)"`
+  5. `"No rejection pattern at valid S/R levels"`
+  6. `"Confidence below threshold (X.XX < 0.60)"`
+  7. `"Trend alignment failed: [signal] in [trend]"` (bypassed if confidence >= 0.75)
+  8. `"Signal cooldown active: next signal allowed after HH:MM:SS"`
+  9. `"Insufficient edge after costs (TP1 X.X pips <= costs Y.Y + edge Z.Z)"`
+  10. General errors during processing
 
 #### Error Responses
 
@@ -367,6 +414,41 @@ console.log(`Signal: ${signal.signal}`);
 4. **Timeframes**: Use standard MT5 timeframe strings (M1, M5, M15, M30, H1, H4, D1, W1)
 5. **Symbol Format**: Use standard broker symbol names (e.g., "EURUSD", not "EUR/USD")
 6. **Handle HOLD**: HOLD signals are normal and expected (quality over quantity)
+
+#### Backtest Parity Mode
+
+For ensuring backtest-live parity, use these exact parameters (matches `BACKTEST_PARITY_CONFIG`):
+
+```json
+{
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "data": [...],  // 400+ closed bars only
+
+  // Backtest parity parameters
+  "min_confidence": 0.60,
+  "broken_level_cooldown_hours": 48.0,
+  "broken_level_break_pips": 15.0,
+  "min_edge_pips": 4.0,
+  "spread_pips": 1.0,
+  "slippage_pips": 0.5,
+  "commission_per_side_per_lot": 7.0,
+  "usd_per_pip_per_lot": 10.0,
+  "lot_size": 1.0
+}
+```
+
+**Critical for Parity:**
+- Send **closed bars only** (no forming bar at index 0)
+- Send exactly 400 bars (or more, but consistent with backtest)
+- Use identical cost parameters as backtest
+- Ensure bar timestamps are strictly increasing (oldest → newest)
+- Last bar should be the decision bar (closed, not forming)
+
+**MT5 EA Parity Mode:**
+The MT5 EA (`volarix4.mq5`) has a `BacktestParityMode` option that automatically sends these parameters. When enabled, the EA overrides manual inputs and forces backtest-matching values.
+
+**See**: `docs/PARITY_CONTRACT.md` and `docs/BACKTEST_PARITY.md` for comprehensive parity documentation.
 
 ---
 

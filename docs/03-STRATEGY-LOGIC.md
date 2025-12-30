@@ -347,22 +347,284 @@ def is_valid_session(timestamp):
     return in_london or in_ny
 ```
 
-## Signal Generation Decision Tree
+### 5. Trend Filter (EMA 20/50)
+
+Uses dual Exponential Moving Averages to identify market trend and filter trades accordingly.
+
+**Trend Detection Logic**:
+```python
+ema_fast = df['close'].ewm(span=20).mean()  # 20-period EMA
+ema_slow = df['close'].ewm(span=50).mean()  # 50-period EMA
+
+if ema_fast > ema_slow:
+    trend = "UPTREND"   # Bullish trend
+elif ema_fast < ema_slow:
+    trend = "DOWNTREND" # Bearish trend
+else:
+    trend = "RANGING"   # No clear trend
+```
+
+**Trend Alignment Rules**:
+- **UPTREND**: Allow BUY signals, reject SELL signals
+- **DOWNTREND**: Allow SELL signals, reject BUY signals
+- **RANGING**: Allow both BUY and SELL signals
+
+**High Confidence Bypass**:
+- If confidence >= 0.75, allow counter-trend trades
+- Example: SELL signal with 0.82 confidence allowed in UPTREND
+- Rationale: Very strong rejection may overcome trend
+
+**Configuration**:
+```python
+TREND_FILTER_CONFIG = {
+    "ema_fast": 20,                      # Fast EMA period
+    "ema_slow": 50,                      # Slow EMA period
+    "min_confidence_for_bypass": 0.75    # Bypass threshold
+}
+```
+
+### 6. Broken Level Filter
+
+Tracks S/R levels that have been broken and applies cooldown period to prevent trading at unreliable levels.
+
+**Why This Matters**:
+- Once a support becomes resistance (or vice versa), it's less reliable
+- Need time for new level psychology to form
+- Prevents trading false signals at recently broken levels
+
+**Broken Level Criteria**:
+
+**Support Broken**:
+```python
+if price_low < support_level - (15 pips × pip_value):
+    # Support is broken
+    mark_broken(support_level, timestamp)
+    apply_cooldown(48 hours)
+```
+
+**Resistance Broken**:
+```python
+if price_high > resistance_level + (15 pips × pip_value):
+    # Resistance is broken
+    mark_broken(resistance_level, timestamp)
+    apply_cooldown(48 hours)
+```
+
+**Cooldown Period**: 48 hours (configurable)
+
+**Implementation**:
+- Tracks broken levels in-memory with timestamps
+- Filters out levels still in cooldown before rejection search
+- Logs broken level info for debugging
+
+**Example**:
+```
+Support at 1.08500 broken at 2025-01-30 10:00 (price dropped to 1.08350)
+→ Level unavailable until 2025-02-01 10:00 (48h later)
+```
+
+**Configuration**:
+```python
+BROKEN_LEVEL_CONFIG = {
+    "cooldown_hours": 48.0,        # Hours to wait after break
+    "break_threshold_pips": 15.0   # Pips beyond level = broken
+}
+```
+
+### 7. Confidence Filter
+
+Rejects signals below minimum confidence threshold to ensure trade quality.
+
+**Confidence Calculation** (from rejection pattern):
+```python
+confidence = ((level_score / 100) + (wick_body_ratio / 10)) / 2
+confidence = min(confidence, 1.0)  # Cap at 100%
+```
+
+**Minimum Threshold**: 0.60 (default, configurable via API)
+
+**Why 0.60?**
+- Backtesting shows optimal win rate at this threshold
+- Too low (0.50): Many false signals, lower win rate
+- Too high (0.70): Misses valid trades, lower opportunity
+- 0.60 balances quality vs quantity
+
+**Example Rejections**:
+```
+Signal: BUY, Confidence: 0.55
+→ REJECTED: "Confidence below threshold (0.55 < 0.60)"
+
+Signal: SELL, Confidence: 0.68
+→ ACCEPTED: Confidence above threshold
+```
+
+### 8. Signal Cooldown
+
+Prevents over-trading by enforcing time delay between signals for each symbol.
+
+**Cooldown Period**: 2 hours (per symbol)
+
+**Logic**:
+```python
+last_signal_time = get_last_signal_time(symbol)
+current_time = datetime.now()
+time_since_last_signal = current_time - last_signal_time
+
+if time_since_last_signal < timedelta(hours=2):
+    return HOLD  # In cooldown
+```
+
+**Benefits**:
+- Reduces trading costs (commissions/spreads)
+- Prevents revenge trading on similar setups
+- Forces patience for better quality setups
+- Reduces correlation between consecutive trades
+
+**Example**:
+```
+EURUSD Signal 1: BUY at 10:00 → Trade opened
+EURUSD Signal 2: BUY at 10:30 → REJECTED (cooldown)
+EURUSD Signal 3: BUY at 11:30 → REJECTED (cooldown)
+EURUSD Signal 4: BUY at 12:05 → ACCEPTED (>2h elapsed)
+
+GBPUSD Signal 1: SELL at 10:15 → Trade opened (different symbol, independent cooldown)
+```
+
+**Configuration**:
+```python
+SIGNAL_COOLDOWN_CONFIG = {
+    "cooldown_hours": 2.0  # Hours between signals per symbol
+}
+```
+
+### 9. Minimum Edge Filter
+
+Ensures sufficient profit potential after all costs to make the trade worthwhile.
+
+**Cost Model**:
+```python
+# Round-trip costs
+commission_pips = (2 × commission_per_side × lot_size) / usd_per_pip_per_lot
+total_cost_pips = spread_pips + (2 × slippage_pips) + commission_pips
+
+# Example with defaults:
+# commission = (2 × 7.0 × 1.0) / 10.0 = 1.4 pips
+# total_cost = 1.0 + (2 × 0.5) + 1.4 = 3.4 pips
+```
+
+**Min Edge Requirement**:
+```python
+TP1_distance_pips > total_cost_pips + min_edge_pips
+
+# Default min_edge = 4.0 pips
+# Example: TP1 must be > 3.4 + 4.0 = 7.4 pips minimum
+```
+
+**Why This Matters**:
+- Even winning trades can be net negative after costs
+- Ensures every trade has meaningful profit potential
+- Accounts for broker-specific costs (spread, commission, slippage)
+- Prevents low-probability-of-profit trades
+
+**Default Cost Parameters**:
+```python
+COST_CONFIG = {
+    "spread_pips": 1.0,                    # Typical EURUSD spread
+    "slippage_pips": 0.5,                  # One-way slippage
+    "commission_per_side_per_lot": 7.0,    # USD per lot per side
+    "usd_per_pip_per_lot": 10.0,           # Standard lot
+    "lot_size": 1.0,                       # Lots traded
+    "min_edge_pips": 4.0                   # Minimum profit edge
+}
+```
+
+**Example Calculations**:
+
+**Case 1: Insufficient Edge (REJECTED)**
+```
+Entry: 1.08500
+SL: 1.08470 (3.0 pips risk)
+TP1: 1.08530 (3.0 pips reward = 1R)
+TP1 distance: 3.0 pips
+Total costs: 3.4 pips
+Required: 3.4 + 4.0 = 7.4 pips
+Result: REJECTED (3.0 < 7.4)
+Reason: "Insufficient edge after costs"
+```
+
+**Case 2: Sufficient Edge (ACCEPTED)**
+```
+Entry: 1.08500
+SL: 1.08450 (5.0 pips risk)
+TP1: 1.08550 (5.0 pips reward = 1R)
+TP1 distance: 5.0 pips
+Total costs: 3.4 pips
+Required: 3.4 + 4.0 = 7.4 pips
+
+Wait, 5.0 < 7.4, so this would also be rejected. Let me fix:
+
+Entry: 1.08500
+SL: 1.08425 (7.5 pips risk)
+TP1: 1.08575 (7.5 pips reward = 1R)
+TP1 distance: 7.5 pips
+Total costs: 3.4 pips
+Required: 3.4 + 4.0 = 7.4 pips
+Result: ACCEPTED (7.5 > 7.4)
+```
+
+## Signal Generation Decision Tree (10-Stage Pipeline)
 
 ```
 START: Receive OHLCV data
   │
-  ├─ Is latest bar in valid session (London/NY)?
-  │    NO → Return HOLD (reason: "Outside trading session")
-  │    YES ↓
+  ├─ STAGE 1: Bar Validation (bar_validation.py)
+  │    Invalid bars → Return 422 ERROR
+  │    Valid ↓
   │
-  ├─ Detect S/R levels (score >= 60)
+  ├─ STAGE 2: Session Filter (data.py)
+  │    Outside London/NY → Return HOLD (reason: "Outside trading session")
+  │    Valid session ↓
+  │
+  ├─ STAGE 3: Trend Filter (trend_filter.py)
+  │    Calculate EMA 20/50
+  │    Detect trend direction
+  │    Store trend info for later validation ↓
+  │
+  ├─ STAGE 4: S/R Detection (sr_levels.py)
+  │    Detect S/R levels (score >= 60)
   │    None found → Return HOLD (reason: "No significant S/R levels")
   │    Found ↓
   │
-  ├─ Search last 5 candles for rejection
+  ├─ STAGE 5: Broken Level Filter (sr_validation.py)
+  │    Check broken level cooldown (48h)
+  │    All broken/cooldown → Return HOLD (reason: "All levels broken or in cooldown")
+  │    Valid levels ↓
+  │
+  ├─ STAGE 6: Rejection Search (rejection.py)
+  │    Search last 5 candles for rejection
   │    None found → Return HOLD (reason: "No rejection pattern")
   │    Found ↓
+  │
+  ├─ STAGE 7: Confidence Filter (main.py)
+  │    Check confidence >= 0.60
+  │    Too low → Return HOLD (reason: "Confidence below threshold")
+  │    Sufficient confidence ↓
+  │
+  ├─ STAGE 8: Trend Alignment (trend_filter.py)
+  │    IF confidence >= 0.75 → BYPASS (high confidence)
+  │    ELSE IF signal aligns with trend → PASS
+  │    ELSE → Return HOLD (reason: "Trend alignment failed")
+  │    Aligned (or bypassed) ↓
+  │
+  ├─ STAGE 9: Signal Cooldown (main.py)
+  │    Check last signal time for symbol
+  │    Last signal < 2h ago → Return HOLD (reason: "Signal cooldown active")
+  │    No recent signal ↓
+  │
+  ├─ STAGE 10: Min Edge Filter (trade_setup.py)
+  │    Calculate costs (spread + slippage + commission)
+  │    TP1 distance <= costs + 4 pips → Return HOLD (reason: "Insufficient edge")
+  │    Sufficient edge ↓
   │
   ├─ Calculate entry, SL, TP levels
   │    ↓
@@ -405,6 +667,49 @@ START: Receive OHLCV data
     "tp2_percent": 0.40,         # 40% at TP2
     "tp3_percent": 0.20,         # 20% at TP3
     "min_rr": 1.5                # Min risk:reward (not enforced)
+}
+```
+
+### Trend Filter (`TREND_FILTER_CONFIG`)
+```python
+{
+    "ema_fast": 20,                      # Fast EMA period
+    "ema_slow": 50,                      # Slow EMA period
+    "min_confidence_for_bypass": 0.75    # Bypass threshold for counter-trend
+}
+```
+
+### Broken Level Filter (`BROKEN_LEVEL_CONFIG`)
+```python
+{
+    "cooldown_hours": 48.0,        # Hours to wait after level break
+    "break_threshold_pips": 15.0   # Pips beyond level = broken
+}
+```
+
+### Confidence Filter (`CONFIDENCE_CONFIG`)
+```python
+{
+    "min_confidence": 0.60  # Minimum confidence threshold (0.0-1.0)
+}
+```
+
+### Signal Cooldown (`SIGNAL_COOLDOWN_CONFIG`)
+```python
+{
+    "cooldown_hours": 2.0  # Hours between signals per symbol
+}
+```
+
+### Min Edge Filter (`MIN_EDGE_CONFIG`)
+```python
+{
+    "min_edge_pips": 4.0,                # Minimum profitable pips after costs
+    "spread_pips": 1.0,                  # Typical spread in pips
+    "slippage_pips": 0.5,                # One-way slippage in pips
+    "commission_per_side_per_lot": 7.0,  # USD per lot per side
+    "usd_per_pip_per_lot": 10.0,         # Standard lot pip value
+    "lot_size": 1.0                      # Lots traded
 }
 ```
 

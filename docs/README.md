@@ -6,9 +6,10 @@ A minimal, production-ready REST API for generating trading signals based on Sup
 
 - **Pure S/R Strategy**: No machine learning, just proven price action
 - **Volarix 3 Compatible**: Drop-in replacement with same API interface
-- **4-Stage Pipeline**: Data → S/R Detection → Rejection Pattern → Signal
+- **10-Stage Pipeline**: Bar Validation → Session Filter → Trend Filter → S/R Detection → Broken Level Filter → Rejection Search → Confidence Filter → Trend Alignment → Signal Cooldown → Min Edge Filter
 - **Session Filtered**: Only trades during London (3-11am EST) and NY (8am-4pm EST) sessions
 - **Risk Management**: Automated SL/TP calculation with 1R/2R/3R targets
+- **Backtest-API Parity**: Comprehensive test suite ensures backtest results match live trading
 
 ## Quick Start
 
@@ -180,6 +181,22 @@ print(f"Reason: {signal['reason']}")
 - **TP2**: 2R (40% position)
 - **TP3**: 3R (20% position)
 
+### Advanced Filters
+
+- **Trend Filter**: EMA 20/50 crossover (allows counter-trend if confidence >= 0.75)
+- **Broken Level Filter**: 48-hour cooldown on broken S/R levels (15 pip breach threshold)
+- **Confidence Filter**: Minimum 0.60 confidence threshold (balances quality vs quantity)
+- **Signal Cooldown**: 2-hour delay between signals per symbol (prevents over-trading)
+- **Min Edge Filter**: Requires 4.0 pips profit after all costs (spread + slippage + commission)
+
+**Default Costs**:
+- Spread: 1.0 pips
+- Slippage: 0.5 pips (one-way)
+- Commission: $7/lot/side
+- Min Edge: 4.0 pips
+
+See `docs/03-STRATEGY-LOGIC.md` for detailed filter documentation.
+
 ## Configuration
 
 Edit `config.py` to adjust strategy parameters:
@@ -244,7 +261,7 @@ volarix4/
 Comprehensive API testing:
 
 ```bash
-python test_api.py
+python tests/test_api.py
 ```
 
 Tests include:
@@ -254,12 +271,33 @@ Tests include:
 - Multiple symbol testing
 - Response time performance
 
+### Parity Tests
+
+Ensure backtest and API remain synchronized:
+
+```bash
+# Run parity tests
+python -m pytest tests/test_backtest_api_parity.py -v
+```
+
+These tests will **FAIL** if:
+- Bar indexing changes (forming bar inclusion)
+- Session hours change (London/NY times)
+- EMA periods change (20/50)
+- Cost model formula changes
+- Filter order changes
+- Parameter defaults change
+
+**Always run parity tests before committing changes to filters or parameters.**
+
+See `docs/PARITY_TESTS.md` for details.
+
 ### Development Backtest
 
 Run realistic bar-by-bar backtest:
 
 ```bash
-python backtest.py
+python tests/backtest.py
 ```
 
 **⚠ IMPORTANT NOTE**: This backtest is for development validation only. Final backtesting should be done using a MetaTrader 5 Expert Advisor for accurate results with real broker conditions, spreads, and slippage.
@@ -360,6 +398,6 @@ Detailed logs are saved in `logs/volarix4_YYYY-MM-DD.log`
 ### Run Full Test Suite
 
 ```bash
-python test_api.py      # Complete API testing
-python backtest.py      # Development backtest
+python tests/test_api.py      # Complete API testing
+python tests/backtest.py      # Development backtest
 ```
