@@ -24,12 +24,22 @@ struct OHLCVBar
 //  IMPORT DLL
 //====================================================================
 #import "Volarix4Bridge.dll"
-   // Send OHLCV data to Volarix 4 API and get signal
+   // Send OHLCV data to Volarix 4 API and get signal (with new parameters)
    string GetVolarix4Signal(
       string symbol,
       string timeframe,
       OHLCVBar &bars[],
-      int barCount
+      int barCount,
+      string apiUrl,
+      double minConfidence,
+      double brokenLevelCooldownHours,
+      double brokenLevelBreakPips,
+      double minEdgePips,
+      double spreadPips,
+      double slippagePips,
+      double commissionPerSidePerLot,
+      double usdPerPipPerLot,
+      double lotSize
    );
 #import
 
@@ -45,6 +55,19 @@ input string API_URL = "http://localhost:8000";  // Volarix 4 API URL
 input double RiskPercent = 1.0;                  // Risk per trade (%)
 input int    MaxPositions = 1;                   // Max open positions
 input bool   EnableTrading = true;               // Enable auto-trading
+
+// Strategy Parameters (NEW - matches API)
+input double MinConfidence = 0.60;               // Minimum confidence threshold (0.0-1.0)
+input double BrokenLevelCooldownHours = 48.0;    // Hours to wait after level break
+input double BrokenLevelBreakPips = 15.0;        // Pips beyond level = broken
+input double MinEdgePips = 4.0;                  // Min profitable edge after costs
+
+// Cost Model Parameters (NEW - matches API)
+input double SpreadPips = 1.0;                   // Broker spread in pips
+input double SlippagePips = 0.5;                 // Expected slippage per side
+input double CommissionPerSidePerLot = 7.0;      // USD commission per lot per side
+input double UsdPerPipPerLot = 10.0;             // Standard lot pip value
+input double LotSizeForCostCalc = 1.0;           // Lot size for commission calc
 
 //====================================================================
 //  GLOBAL VARIABLES
@@ -198,7 +221,7 @@ void OnTick()
 
    // Copy bars from MT5
    MqlRates rates[];
-   int copied = CopyRates(SymbolToCheck, Timeframe, 0, LookbackBars, rates);
+   int copied = CopyRates(SymbolToCheck, Timeframe, 0, 400, rates);
 
    if(copied <= 0)
    {
@@ -225,13 +248,25 @@ void OnTick()
    Print("  Symbol: ", SymbolToCheck);
    Print("  Timeframe: ", TimeframeToString(Timeframe));
    Print("  Bars to send: ", copied);
+   Print("  Min Confidence: ", MinConfidence);
+   Print("  Min Edge (pips): ", MinEdgePips);
 
    ResetLastError();
    string response = GetVolarix4Signal(
       SymbolToCheck,
       TimeframeToString(Timeframe),
       bars,
-      copied
+      copied,
+      API_URL,
+      MinConfidence,
+      BrokenLevelCooldownHours,
+      BrokenLevelBreakPips,
+      MinEdgePips,
+      SpreadPips,
+      SlippagePips,
+      CommissionPerSidePerLot,
+      UsdPerPipPerLot,
+      LotSizeForCostCalc
    );
 
    int dll_error = GetLastError();

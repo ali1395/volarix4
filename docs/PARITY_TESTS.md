@@ -1,5 +1,32 @@
 # Backtest-API Parity Tests
 
+## Quick Summary
+
+**Status:** ✅ **COMPLETE** (2025-12-29)
+**Impact:** 🔴 **CRITICAL** - Prevents costly production bugs from parameter/logic changes
+
+**What it does:** Automated test suite that **prevents future drift** between offline backtest and live API by comparing their decision outputs on identical bar windows.
+
+**Test Coverage:**
+- 4 fixtures covering key scenarios (success, session rejection, confidence rejection, edge rejection)
+- 8 test cases (4 parametrized + 4 configuration validation)
+- CI integration via GitHub Actions
+
+**Files:**
+- `tests/test_backtest_api_parity.py` - Main test suite (700+ lines)
+- `tests/fixtures/*.json` - Test fixtures (4 files)
+- `.github/workflows/parity_tests.yml` - CI configuration
+
+**Quick Start:**
+```bash
+pip install -r tests/requirements.txt
+python -m pytest tests/test_backtest_api_parity.py -v
+```
+
+**Expected:** All 8 tests pass in ~2 seconds
+
+---
+
 ## Overview
 
 Automated tests that prevent drift between offline backtest and live API by comparing their decision outputs on identical bar windows.

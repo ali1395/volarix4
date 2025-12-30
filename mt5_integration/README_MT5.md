@@ -56,12 +56,27 @@ Wait for: `Uvicorn running on http://0.0.0.0:8000`
 1. Open a chart (e.g., EURUSD H1)
 2. Drag `volarix4` EA onto the chart
 3. Configure inputs:
+
+   **Basic Settings:**
    - **SymbolToCheck**: EURUSD
    - **Timeframe**: H1 (or PERIOD_CURRENT)
    - **LookbackBars**: 400
    - **API_URL**: http://localhost:8000
    - **RiskPercent**: 1.0
    - **EnableTrading**: false (for testing)
+
+   **Strategy Parameters** (use defaults initially):
+   - **MinConfidence**: 0.60
+   - **BrokenLevelCooldownHours**: 48.0
+   - **BrokenLevelBreakPips**: 15.0
+   - **MinEdgePips**: 4.0
+
+   **Cost Model** (adjust to match your broker):
+   - **SpreadPips**: 1.0 (check your broker's spread)
+   - **SlippagePips**: 0.5
+   - **CommissionPerSidePerLot**: 7.0 (check your broker's commission)
+   - **UsdPerPipPerLot**: 10.0
+   - **LotSizeForCostCalc**: 1.0
 
 4. Click OK
 
@@ -129,10 +144,46 @@ API Response (285 bytes): {"signal":"BUY","confidence":0.75,...
 | SymbolToCheck | EURUSD | Trading symbol |
 | Timeframe | PERIOD_H1 | Timeframe for signals |
 | LookbackBars | 400 | Bars to send to API |
-| API_URL | localhost:8000 | Volarix 4 API URL |
+| API_URL | http://localhost:8000 | Volarix 4 API URL |
 | RiskPercent | 1.0 | Risk per trade (%) |
 | MaxPositions | 1 | Max concurrent positions |
 | EnableTrading | true | Enable auto-trading |
+
+### Strategy Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| MinConfidence | 0.60 | Minimum confidence threshold (0.0-1.0) |
+| BrokenLevelCooldownHours | 48.0 | Hours to wait after level breaks (prevents trading broken S/R) |
+| BrokenLevelBreakPips | 15.0 | Pips beyond level = broken (larger = more lenient) |
+| MinEdgePips | 4.0 | Minimum profitable edge after all costs |
+
+**MinConfidence**: Controls signal quality vs quantity. Higher values (0.70-0.80) = fewer but stronger signals. Lower values (0.55-0.65) = more signals but lower win rate.
+
+**BrokenLevelCooldownHours**: After a support/resistance level is broken (price moves beyond it by BrokenLevelBreakPips), the API waits this many hours before trading that level again. Default 48 hours prevents trading stale levels.
+
+**BrokenLevelBreakPips**: How far price must move beyond a level to consider it "broken". Default 15 pips for major pairs. Adjust based on volatility (use 25-30 for GBP pairs, 10-12 for stable pairs).
+
+**MinEdgePips**: Minimum profit potential after deducting spread, slippage, and commission. Default 4 pips ensures trades have positive expected value. Lower values may result in unprofitable trades due to costs.
+
+### Cost Model Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| SpreadPips | 1.0 | Broker spread in pips (check your broker) |
+| SlippagePips | 0.5 | Expected slippage per side (market orders) |
+| CommissionPerSidePerLot | 7.0 | USD commission per lot per side |
+| UsdPerPipPerLot | 10.0 | Standard lot pip value (typically 10 for majors) |
+| LotSizeForCostCalc | 1.0 | Lot size for commission calculation |
+
+**Why These Matter**: The API calculates **net edge** after costs. A trade with 8 pips raw profit but 2 pips spread + 1 pip slippage + 1 pip commission = only 4 pips net edge. If MinEdgePips = 5, this trade is rejected.
+
+**How to Configure**:
+1. **SpreadPips**: Check your broker's typical spread for the symbol (Tools → Symbols → Spread)
+2. **SlippagePips**: Use 0.5 for ECN brokers, 1.0-2.0 for market makers
+3. **CommissionPerSidePerLot**: Check your broker's fee structure (often $3-10/side)
+4. **UsdPerPipPerLot**: Usually 10 for majors (EURUSD, GBPUSD), 8-12 for crosses, 1 for JPY pairs
+5. **LotSizeForCostCalc**: Set to your typical trade size (1.0 = standard lot, 0.1 = mini lot)
 
 ### Strategy Notes
 
@@ -195,10 +246,22 @@ API Response (285 bytes): {"signal":"BUY","confidence":0.75,...
 
 ### Modify Strategy Parameters
 
-Edit `volarix4.mq5`:
+Edit `volarix4.mq5` to adjust strategy behavior:
 ```mql5
-input int LookbackBars = 100;  // Use more bars
-input double RiskPercent = 2.0; // Increase risk
+// More conservative (fewer, higher quality signals)
+input double MinConfidence = 0.75;       // Raise threshold
+input double MinEdgePips = 6.0;          // Require more edge
+
+// More aggressive (more signals, lower quality)
+input double MinConfidence = 0.55;       // Lower threshold
+input double MinEdgePips = 3.0;          // Accept less edge
+
+// Adjust for volatile pairs (GBPJPY, GBPUSD)
+input double BrokenLevelBreakPips = 30.0;  // Wider threshold
+input double SpreadPips = 2.5;             // Higher typical spread
+
+// Adjust position sizing
+input double RiskPercent = 2.0;            // Increase risk per trade
 ```
 
 ### Change API Server

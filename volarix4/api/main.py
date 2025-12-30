@@ -299,7 +299,7 @@ def create_app() -> FastAPI:
                     timeframe=request.timeframe,
                     min_bars=200,  # Per Parity Contract: exec200 lookback
                     allow_gap_tolerance=True,
-                    max_gap_multiplier=5
+                    max_gap_multiplier=168  # 1 week = 168 hours (allows weekends + holidays)
                 )
             except BarValidationError as e:
                 logger.error(f"Bar validation failed: {e}")
