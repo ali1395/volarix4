@@ -47,14 +47,14 @@ void WriteDebugLog(const char* message)
 }
 
 //=============================================================================
-//  Main DLL Function: GetVolarix4Signal (Updated for API v4)
+//  Main DLL Function: GetVolarix4Signal (Optimized - sends only bar timestamp)
 //=============================================================================
 extern "C" __declspec(dllexport)
 BSTR __stdcall GetVolarix4Signal(
     const wchar_t* symbol,
     const wchar_t* timeframe,
-    OHLCVBar* bars,
-    int barCount,
+    long long barTime,           // Unix timestamp of bar to generate signal for
+    int lookbackBars,            // Number of bars to fetch (e.g., 400)
     const wchar_t* apiUrl,
     double minConfidence,
     double brokenLevelCooldownHours,
@@ -66,21 +66,11 @@ BSTR __stdcall GetVolarix4Signal(
     double usdPerPipPerLot,
     double lotSize)
 {
-    // Debug: Log struct size to verify packing
+    // Debug: Log call
     std::stringstream struct_debug;
-    struct_debug << "=== DLL Called ===" << std::endl;
-    struct_debug << "OHLCVBar struct size: " << sizeof(OHLCVBar) << " bytes (should be 44)" << std::endl;
-    struct_debug << "Bar count: " << barCount << std::endl;
-    if (barCount > 0) {
-        struct_debug << "First bar: timestamp=" << bars[0].timestamp
-                  << ", open=" << bars[0].open
-                  << ", close=" << bars[0].close << std::endl;
-    }
-    if (barCount > 1) {
-        struct_debug << "Second bar: timestamp=" << bars[1].timestamp
-                  << ", open=" << bars[1].open
-                  << ", close=" << bars[1].close << std::endl;
-    }
+    struct_debug << "=== DLL Called (Optimized Mode) ===" << std::endl;
+    struct_debug << "Bar time (Unix): " << barTime << std::endl;
+    struct_debug << "Lookback bars: " << lookbackBars << std::endl;
     WriteDebugLog(struct_debug.str().c_str());
 
     // Convert wide strings to std::string
@@ -90,33 +80,13 @@ BSTR __stdcall GetVolarix4Signal(
     std::wstring ws_tf(timeframe);
     std::string tf(ws_tf.begin(), ws_tf.end());
 
-    // Build JSON array for OHLCV data
-    std::stringstream data_array;
-    data_array << "[";
-
-    for (int i = 0; i < barCount; i++)
-    {
-        data_array << "{"
-            << "\"time\":" << bars[i].timestamp << ","
-            << "\"open\":" << std::fixed << std::setprecision(5) << bars[i].open << ","
-            << "\"high\":" << std::fixed << std::setprecision(5) << bars[i].high << ","
-            << "\"low\":" << std::fixed << std::setprecision(5) << bars[i].low << ","
-            << "\"close\":" << std::fixed << std::setprecision(5) << bars[i].close << ","
-            << "\"volume\":" << bars[i].volume
-            << "}";
-
-        if (i < barCount - 1)
-            data_array << ",";
-    }
-
-    data_array << "]";
-
-    // Build complete JSON payload (matching Volarix 4 API with new parameters)
+    // Build complete JSON payload (optimized - only send bar timestamp)
     std::stringstream payload;
     payload << "{"
         << "\"symbol\":\"" << sym << "\","
         << "\"timeframe\":\"" << tf << "\","
-        << "\"data\":" << data_array.str() << ","
+        << "\"bar_time\":" << barTime << ","
+        << "\"lookback_bars\":" << lookbackBars << ","
         << "\"min_confidence\":" << std::fixed << std::setprecision(2) << minConfidence << ","
         << "\"broken_level_cooldown_hours\":" << std::fixed << std::setprecision(1) << brokenLevelCooldownHours << ","
         << "\"broken_level_break_pips\":" << std::fixed << std::setprecision(1) << brokenLevelBreakPips << ","
@@ -132,10 +102,11 @@ BSTR __stdcall GetVolarix4Signal(
 
     // Debug log
     std::stringstream debug_msg;
-    debug_msg << "=== Volarix 4 API Call ===" << std::endl;
+    debug_msg << "=== Volarix 4 API Call (Optimized) ===" << std::endl;
     debug_msg << "Symbol: " << sym << std::endl;
     debug_msg << "Timeframe: " << tf << std::endl;
-    debug_msg << "Bars: " << barCount << std::endl;
+    debug_msg << "Bar time: " << barTime << std::endl;
+    debug_msg << "Lookback bars: " << lookbackBars << std::endl;
     debug_msg << "Payload size: " << payload_str.length() << " bytes" << std::endl;
     WriteDebugLog(debug_msg.str().c_str());
 

@@ -8,28 +8,16 @@
 #property strict
 
 //====================================================================
-//  OHLCV BAR STRUCTURE (matches API OHLCVBar model)
-//====================================================================
-struct OHLCVBar
-{
-   long timestamp;      // Unix timestamp
-   double open;
-   double high;
-   double low;
-   double close;
-   int volume;
-};
-
-//====================================================================
-//  IMPORT DLL
+//  IMPORT DLL (Optimized - sends only bar timestamp)
 //====================================================================
 #import "Volarix4Bridge.dll"
-   // Send OHLCV data to Volarix 4 API and get signal
+   // Send bar timestamp to Volarix 4 API and get signal
+   // API will fetch bars using Python (faster, better correlation with backtest)
    string GetVolarix4Signal(
       string symbol,
       string timeframe,
-      OHLCVBar &bars[],
-      int barCount,
+      long barTime,            // Unix timestamp of bar to generate signal for
+      int lookbackBars,        // Number of bars to fetch (e.g., 400)
       string apiUrl,
       double minConfidence,
       double brokenLevelCooldownHours,
@@ -252,35 +240,15 @@ void OnTick()
    if(!IsNewBar())
       return;
 
-   datetime current_time = iTime(SymbolToCheck, Timeframe, 0);
+   // Get the bar time we want to generate signal for (current bar at index 0)
+   datetime current_bar_time = iTime(SymbolToCheck, Timeframe, 0);
+   long bar_timestamp = (long)current_bar_time;
 
-   PrintFormat("New %s candle at %s - Calling Volarix 4 API...",
+   PrintFormat("New %s candle at %s - Calling Volarix 4 API (Optimized Mode)...",
                TimeframeToString(Timeframe),
-               TimeToString(current_time, TIME_DATE|TIME_MINUTES));
+               TimeToString(current_bar_time, TIME_DATE|TIME_MINUTES));
 
-   // Copy bars from MT5 (start from index 1 to skip forming bar)
-   MqlRates rates[];
-   int copied = CopyRates(SymbolToCheck, Timeframe, 1, LookbackBars, rates);
-
-   if(copied <= 0)
-   {
-      Print("Failed to copy bars from MT5");
-      return;
-   }
-
-   // Convert to OHLCVBar array for DLL
-   OHLCVBar bars[];
-   ArrayResize(bars, copied);
-
-   for(int i = 0; i < copied; i++)
-   {
-      bars[i].timestamp = (long)rates[i].time;
-      bars[i].open = rates[i].open;
-      bars[i].high = rates[i].high;
-      bars[i].low = rates[i].low;
-      bars[i].close = rates[i].close;
-      bars[i].volume = (int)rates[i].tick_volume;
-   }
+   PrintFormat("Sending bar timestamp: %d (API will fetch bars using Python)", bar_timestamp);
 
    // Determine active parameters (backtest parity mode or user inputs)
    double active_min_conf = BacktestParityMode ? 0.60 : MinConfidence;
@@ -293,20 +261,21 @@ void OnTick()
    double active_usd_pip = BacktestParityMode ? 10.0 : UsdPerPipPerLot;
    double active_lot = BacktestParityMode ? 1.0 : LotSize;
 
-   Print("Calling DLL: GetVolarix4Signal()");
+   Print("Calling DLL: GetVolarix4Signal() [Optimized Mode]");
    Print("  Symbol: ", SymbolToCheck);
    Print("  Timeframe: ", TimeframeToString(Timeframe));
-   Print("  Bars to send: ", copied);
+   Print("  Bar timestamp: ", bar_timestamp);
+   Print("  Lookback bars: ", LookbackBars);
    Print("  Min Confidence: ", active_min_conf);
    Print("  Min Edge (pips): ", active_min_edge);
 
-   // Call DLL to get signal from API
+   // Call DLL to get signal from API (optimized - only send bar timestamp)
    ResetLastError();
    string response = GetVolarix4Signal(
       SymbolToCheck,
       TimeframeToString(Timeframe),
-      bars,
-      copied,
+      bar_timestamp,        // Only send bar timestamp
+      LookbackBars,         // Number of bars to fetch
       API_URL,
       active_min_conf,
       active_cooldown,
@@ -335,12 +304,12 @@ void OnTick()
    if(StringLen(response) == 0)
    {
       Print("WARNING: Empty response from API");
-      Print("  HTTP Status Code: ", res);
+      Print("  HTTP Status Code: ", response);
       Print("  Verify Volarix 4 API is running at: ", API_URL);
       return;
    }
 
-   Print("API Response received (HTTP ", res, ", ", StringLen(response), " bytes)");
+   Print("API Response received (HTTP ", response, ", ", StringLen(response), " bytes)");
 
    // Parse JSON response (simplified - in production use proper JSON parser)
    // Expected: {"signal":"BUY","confidence":0.75,"entry":1.08520,"sl":1.08390,

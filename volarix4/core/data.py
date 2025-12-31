@@ -60,7 +60,7 @@ def _timeframe_to_mt5(timeframe: str) -> Optional[int]:
     return timeframes.get(timeframe.upper())
 
 
-def fetch_ohlc(symbol: str, timeframe: str, bars: int) -> pd.DataFrame:
+def fetch_ohlc(symbol: str, timeframe: str, bars: int, end_time: Optional[datetime] = None) -> pd.DataFrame:
     """
     Fetch OHLC data from MT5.
 
@@ -68,6 +68,9 @@ def fetch_ohlc(symbol: str, timeframe: str, bars: int) -> pd.DataFrame:
         symbol: Trading pair (e.g., "EURUSD")
         timeframe: MT5 timeframe (e.g., "H1", "M30")
         bars: Number of bars to fetch
+        end_time: Optional datetime to fetch bars before (exclusive).
+                  If provided, fetches N bars BEFORE this time (not including it).
+                  If None, fetches most recent bars.
 
     Returns:
         DataFrame with columns: time, open, high, low, close, volume
@@ -85,8 +88,30 @@ def fetch_ohlc(symbol: str, timeframe: str, bars: int) -> pd.DataFrame:
     if mt5_timeframe is None:
         raise ValueError(f"Invalid timeframe: {timeframe}")
 
-    # Fetch data from current position (most recent bars)
-    rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, bars)
+    # Fetch data
+    if end_time is not None:
+        # Fetch bars before the specified time (not including it)
+        # We use copy_rates_from with position 1 to skip the bar at end_time
+        rates = mt5.copy_rates_from(symbol, mt5_timeframe, end_time, bars)
+
+        if rates is None or len(rates) == 0:
+            raise Exception(f"Failed to fetch data for {symbol} before {end_time}, error: {mt5.last_error()}")
+
+        # Filter out bars >= end_time to ensure we don't include the current bar
+        end_timestamp = int(end_time.timestamp())
+        rates = [r for r in rates if r['time'] < end_timestamp]
+
+        # If we don't have enough bars after filtering, fetch more
+        if len(rates) < bars:
+            # Fetch more bars to compensate
+            rates = mt5.copy_rates_from(symbol, mt5_timeframe, end_time, bars + 10)
+            if rates is not None:
+                rates = [r for r in rates if r['time'] < end_timestamp]
+                # Take the last N bars
+                rates = rates[-bars:] if len(rates) > bars else rates
+    else:
+        # Fetch data from current position (most recent bars)
+        rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, bars)
 
     if rates is None or len(rates) == 0:
         raise Exception(f"Failed to fetch data for {symbol}, error: {mt5.last_error()}")

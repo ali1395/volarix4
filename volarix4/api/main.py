@@ -47,10 +47,16 @@ class OHLCVBar(BaseModel):
 
 
 class SignalRequest(BaseModel):
-    """Request schema matching Volarix 3 API exactly"""
+    """Request schema for Volarix 4 API"""
     symbol: str
     timeframe: str
-    data: list[OHLCVBar]  # OHLCV bars for execution timeframe
+
+    # New optimized approach: send only bar timestamp, fetch bars in Python
+    bar_time: int | None = None  # Unix timestamp of bar to generate signal for
+    lookback_bars: int = 400  # Number of bars to fetch before bar_time
+
+    # Legacy support: accept full bar data (for backward compatibility)
+    data: list[OHLCVBar] | None = None  # OHLCV bars for execution timeframe
     execution_timeframe: str | None = None  # Optional execution TF
     context_timeframe: str | None = None  # Optional context TF (multi-TF)
     context_data: list[OHLCVBar] | None = None  # Context TF bars
@@ -256,42 +262,119 @@ def create_app() -> FastAPI:
             logger.info(f"  lot_size: {lot_size}")
             logger.info("=" * 70)
 
+            # Determine if we're using the new optimized approach (bar_time) or legacy (data array)
+            if request.bar_time is not None:
+                # New optimized approach: fetch bars using Python
+                logger.info("=" * 70)
+                logger.info("OPTIMIZED MODE: Fetching bars from MT5 using Python")
+                logger.info("=" * 70)
+                logger.info(f"Bar time (Unix): {request.bar_time}")
+                logger.info(f"Lookback bars: {request.lookback_bars}")
+
+                # Import fetch_ohlc
+                from volarix4.core.data import fetch_ohlc
+
+                # Convert Unix timestamp to datetime
+                bar_datetime = datetime.fromtimestamp(request.bar_time)
+                logger.info(f"Bar datetime: {bar_datetime}")
+
+                # Fetch bars before bar_time (not including it)
+                try:
+                    df_fetched = fetch_ohlc(
+                        symbol=request.symbol,
+                        timeframe=request.timeframe,
+                        bars=request.lookback_bars,
+                        end_time=bar_datetime
+                    )
+                    logger.info(f"Successfully fetched {len(df_fetched)} bars from MT5")
+                    logger.info(f"First bar: {df_fetched['time'].iloc[0]}")
+                    logger.info(f"Last bar: {df_fetched['time'].iloc[-1]}")
+                    logger.info(f"Bar we're generating signal for: {bar_datetime} (excluded)")
+                    logger.info("=" * 70)
+
+                    # Convert DataFrame back to bars_dict format for validation
+                    bars_dict = [{
+                        'time': int(row['time'].timestamp()),
+                        'open': row['open'],
+                        'high': row['high'],
+                        'low': row['low'],
+                        'close': row['close'],
+                        'volume': row['volume']
+                    } for _, row in df_fetched.iterrows()]
+
+                    exec_bar_count = len(bars_dict)
+                    mode = "Single-TF (Optimized - Python fetch)"
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch bars from MT5: {e}")
+                    return SignalResponse(
+                        signal="HOLD",
+                        confidence=0.0,
+                        entry=0.0,
+                        sl=0.0,
+                        tp1=0.0,
+                        tp2=0.0,
+                        tp3=0.0,
+                        tp1_percent=RISK_CONFIG["tp1_percent"],
+                        tp2_percent=RISK_CONFIG["tp2_percent"],
+                        tp3_percent=RISK_CONFIG["tp3_percent"],
+                        reason=f"Failed to fetch bars from MT5: {str(e)}"
+                    )
+
+            else:
+                # Legacy approach: use provided data array
+                if request.data is None or len(request.data) == 0:
+                    logger.error("No bar_time or data provided in request")
+                    return SignalResponse(
+                        signal="HOLD",
+                        confidence=0.0,
+                        entry=0.0,
+                        sl=0.0,
+                        tp1=0.0,
+                        tp2=0.0,
+                        tp3=0.0,
+                        tp1_percent=RISK_CONFIG["tp1_percent"],
+                        tp2_percent=RISK_CONFIG["tp2_percent"],
+                        tp3_percent=RISK_CONFIG["tp3_percent"],
+                        reason="No bar_time or data provided in request"
+                    )
+
+                logger.info("LEGACY MODE: Using provided bar data")
+
+                # Convert request.data to dict format for validation
+                bars_dict = [{
+                    'time': bar.time,
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume
+                } for bar in request.data]
+
+                exec_bar_count = len(bars_dict)
+                mode = "Single-TF (Legacy - bars provided)"
+
             # Determine effective timeframe
             exec_tf = request.execution_timeframe or request.timeframe
             ctx_tf = request.context_timeframe
-            exec_bar_count = len(request.data)
             ctx_bar_count = len(request.context_data) if request.context_data else 0
 
-            # Determine mode (single-TF vs multi-TF)
+            # Check for multi-TF (not supported in V4)
             if ctx_tf and ctx_bar_count > 0:
-                mode = "Multi-TF (FALLBACK to single-TF - Volarix 4 uses single-TF only)"
                 logger.warning(
                     f"Multi-TF requested (ctx_tf={ctx_tf}) but Volarix 4 only supports single-TF. "
                     f"Context data will be ignored. Use Volarix 3 for multi-TF support."
                 )
-            else:
-                mode = "Single-TF"
 
-            # Log request (matching Volarix 3 format)
+            # Log request
             logger.info(
                 f"Signal request: {request.symbol} [{mode}] | "
-                f"Fields: tf={request.timeframe}, exec_tf={request.execution_timeframe}, ctx_tf={request.context_timeframe} | "
-                f"Using: exec={exec_tf}, ctx={ctx_tf or 'None'} | "
-                f"Bars: exec={exec_bar_count}, ctx={ctx_bar_count} | "
-                f"Model: {request.model_type} (ignored - using S/R bounce)"
+                f"Timeframe: {request.timeframe} | "
+                f"Bars: {exec_bar_count} | "
+                f"Bar time: {request.bar_time if request.bar_time else 'N/A (legacy mode)'}"
             )
 
             # 1. Bar Validation (Parity Contract Enforcement)
-            # Convert request.data to dict format for validation
-            bars_dict = [{
-                'time': bar.time,
-                'open': bar.open,
-                'high': bar.high,
-                'low': bar.low,
-                'close': bar.close,
-                'volume': bar.volume
-            } for bar in request.data]
-
             # Validate and normalize bars per Parity Contract
             try:
                 validated_bars, bar_metadata = normalize_and_validate_bars(
