@@ -1293,26 +1293,43 @@ def _run_single_backtest(args):
     Returns:
         Dict with backtest results merged with parameters
     """
+    import sys
     params, backtest_kwargs, df_slice = args
 
-    # Run backtest with these parameters
-    result = run_backtest(
-        min_confidence=params.get('min_confidence'),
-        broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
-        broken_level_break_pips=params.get('broken_level_break_pips', 15.0),
-        min_edge_pips=params.get('min_edge_pips', 2.0),
-        enable_confidence_filter='min_confidence' in params,
-        enable_broken_level_filter='broken_level_cooldown_hours' in params,
-        df=df_slice,
-        enforce_bars_limit=True,
-        verbose=False,
-        **backtest_kwargs
-    )
+    try:
+        # Print to indicate work has started (will be captured by parent)
+        sys.stderr.write(f"[WORKER] Starting: {params}\n")
+        sys.stderr.flush()
 
-    # Merge parameters into result
-    result.update(params)
+        start_time = time.time()
 
-    return result
+        # Run backtest with these parameters
+        result = run_backtest(
+            min_confidence=params.get('min_confidence'),
+            broken_level_cooldown_hours=params.get('broken_level_cooldown_hours'),
+            broken_level_break_pips=params.get('broken_level_break_pips', 15.0),
+            min_edge_pips=params.get('min_edge_pips', 2.0),
+            enable_confidence_filter='min_confidence' in params,
+            enable_broken_level_filter='broken_level_cooldown_hours' in params,
+            df=df_slice,
+            enforce_bars_limit=True,
+            verbose=False,
+            **backtest_kwargs
+        )
+
+        duration = time.time() - start_time
+        sys.stderr.write(f"[WORKER] Completed in {duration:.1f}s: {params}\n")
+        sys.stderr.flush()
+
+        # Merge parameters into result
+        result.update(params)
+
+        return result
+
+    except Exception as e:
+        sys.stderr.write(f"[WORKER] Error: {params} - {str(e)}\n")
+        sys.stderr.flush()
+        return {'error': str(e), **params}
 
 
 def run_grid_search(
@@ -1414,15 +1431,38 @@ def run_grid_search(
                 failed += 1
     else:
         # Parallel execution
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            # Submit all jobs
-            future_to_params = {
-                executor.submit(_run_single_backtest, args): args[0]
-                for args in worker_args
-            }
+        import threading
 
-            # Process results as they complete
-            for future in as_completed(future_to_params):
+        # Heartbeat function to show progress every 30 seconds
+        stop_heartbeat = threading.Event()
+        def heartbeat():
+            last_count = 0
+            while not stop_heartbeat.is_set():
+                stop_heartbeat.wait(30)  # Check every 30 seconds
+                if not stop_heartbeat.is_set():
+                    elapsed = time.time() - grid_start_time
+                    if completed > last_count:
+                        rate = completed / (elapsed / 60) if elapsed > 0 else 0
+                        print(f"[HEARTBEAT] {completed}/{total_combinations} completed in {format_duration(elapsed)} ({rate:.1f}/min)")
+                        last_count = completed
+
+        # Start heartbeat thread
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
+
+        try:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                # Submit all jobs
+                future_to_params = {
+                    executor.submit(_run_single_backtest, args): args[0]
+                    for args in worker_args
+                }
+
+                print(f"[INFO] Submitted {len(future_to_params)} jobs to worker pool")
+                print(f"[INFO] Each backtest processes ~{bars} bars, this may take several minutes per job\n")
+
+                # Process results as they complete
+                for future in as_completed(future_to_params):
                 params = future_to_params[future]
                 completed += 1
 
@@ -1449,6 +1489,11 @@ def run_grid_search(
                 except Exception as e:
                     failed += 1
                     print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}{eta_str}")
+
+        finally:
+            # Stop heartbeat thread
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=1)
 
     # Create DataFrame
     df_results = pd.DataFrame(results_list)
@@ -1518,7 +1563,9 @@ def _run_year_based_walk_forward(
         print(f"[TIMER] Starting year {test_year} at {time.strftime('%H:%M:%S')}")
 
         # Define train and test periods
-        train_start_year = test_year - 2
+        # TODO: For faster testing, use 1 year instead of 2. Change back to -2 for full test.
+        TRAIN_YEARS = 1  # TEMPORARY: Change to 2 for full 2-year training
+        train_start_year = test_year - TRAIN_YEARS
         train_end_year = test_year - 1
 
         # Filter data by year
