@@ -21,19 +21,27 @@ struct OHLCVBar
 };
 
 //====================================================================
-//  IMPORT DLL (DEPRECATED - Now using direct WebRequest)
+//  IMPORT DLL
 //====================================================================
-// #import "Volarix4Bridge.dll"
-//    // Send OHLCV data to Volarix 4 API and get signal
-//    string GetVolarix4Signal(
-//       string symbol,
-//       string timeframe,
-//       OHLCVBar &bars[],
-//       int barCount
-//    );
-// #import
-// NOTE: DLL is no longer needed. EA now uses MT5's native WebRequest()
-// to call the API directly with full strategy parameters.
+#import "Volarix4Bridge.dll"
+   // Send OHLCV data to Volarix 4 API and get signal
+   string GetVolarix4Signal(
+      string symbol,
+      string timeframe,
+      OHLCVBar &bars[],
+      int barCount,
+      string apiUrl,
+      double minConfidence,
+      double brokenLevelCooldownHours,
+      double brokenLevelBreakPips,
+      double minEdgePips,
+      double spreadPips,
+      double slippagePips,
+      double commissionPerSidePerLot,
+      double usdPerPipPerLot,
+      double lotSize
+   );
+#import
 
 //====================================================================
 //  INPUT PARAMETERS
@@ -91,61 +99,6 @@ string TimeframeToString(ENUM_TIMEFRAMES tf)
       case PERIOD_W1:  return "W1";
       default:         return "H1";
    }
-}
-
-//+------------------------------------------------------------------+
-//| Build JSON request body with OHLCV data and strategy params     |
-//+------------------------------------------------------------------+
-string BuildJSONRequest(MqlRates &rates[], int bar_count)
-{
-   // Apply backtest parity mode override if enabled
-   double min_conf = BacktestParityMode ? 0.60 : MinConfidence;
-   double cooldown = BacktestParityMode ? 48.0 : BrokenLevelCooldownHours;
-   double break_pips = BacktestParityMode ? 15.0 : BrokenLevelBreakPips;
-   double min_edge = BacktestParityMode ? 4.0 : MinEdgePips;
-   double spread = BacktestParityMode ? 1.0 : SpreadPips;
-   double slippage = BacktestParityMode ? 0.5 : SlippagePips;
-   double commission = BacktestParityMode ? 7.0 : CommissionPerSidePerLot;
-   double usd_pip = BacktestParityMode ? 10.0 : UsdPerPipPerLot;
-   double lot = BacktestParityMode ? 1.0 : LotSize;
-
-   // Start JSON
-   string json = "{";
-   json += "\"symbol\":\"" + SymbolToCheck + "\",";
-   json += "\"timeframe\":\"" + TimeframeToString(Timeframe) + "\",";
-
-   // Add OHLCV bars
-   json += "\"data\":[";
-   for(int i = 0; i < bar_count; i++)
-   {
-      if(i > 0) json += ",";
-      json += "{";
-      json += "\"time\":" + IntegerToString((long)rates[i].time) + ",";
-      json += "\"open\":" + DoubleToString(rates[i].open, 5) + ",";
-      json += "\"high\":" + DoubleToString(rates[i].high, 5) + ",";
-      json += "\"low\":" + DoubleToString(rates[i].low, 5) + ",";
-      json += "\"close\":" + DoubleToString(rates[i].close, 5) + ",";
-      json += "\"volume\":" + IntegerToString((int)rates[i].tick_volume);
-      json += "}";
-   }
-   json += "],";
-
-   // Add strategy parameters (backtest parity)
-   json += "\"min_confidence\":" + DoubleToString(min_conf, 2) + ",";
-   json += "\"broken_level_cooldown_hours\":" + DoubleToString(cooldown, 1) + ",";
-   json += "\"broken_level_break_pips\":" + DoubleToString(break_pips, 1) + ",";
-   json += "\"min_edge_pips\":" + DoubleToString(min_edge, 1) + ",";
-
-   // Add cost model parameters
-   json += "\"spread_pips\":" + DoubleToString(spread, 1) + ",";
-   json += "\"slippage_pips\":" + DoubleToString(slippage, 1) + ",";
-   json += "\"commission_per_side_per_lot\":" + DoubleToString(commission, 1) + ",";
-   json += "\"usd_per_pip_per_lot\":" + DoubleToString(usd_pip, 1) + ",";
-   json += "\"lot_size\":" + DoubleToString(lot, 2);
-
-   json += "}";
-
-   return json;
 }
 
 //+------------------------------------------------------------------+
@@ -265,8 +218,8 @@ int OnInit()
    Print("  UsdPerPipPerLot: $", active_usd_pip);
    Print("  LotSize: ", active_lot);
    Print("=================================================");
-   Print("Make sure 'Allow Web Requests' is enabled for:");
-   Print("  ", API_URL);
+   Print("Make sure 'Allow DLL imports' is enabled");
+   Print("Volarix4Bridge.dll must be in MQL5\\Libraries\\");
    Print("=================================================");
 
    last_bar_time = iTime(SymbolToCheck, Timeframe, 0);
@@ -305,9 +258,9 @@ void OnTick()
                TimeframeToString(Timeframe),
                TimeToString(current_time, TIME_DATE|TIME_MINUTES));
 
-   // Copy bars from MT5
+   // Copy bars from MT5 (start from index 1 to skip forming bar)
    MqlRates rates[];
-   int copied = CopyRates(SymbolToCheck, Timeframe, 0, LookbackBars, rates);
+   int copied = CopyRates(SymbolToCheck, Timeframe, 1, LookbackBars, rates);
 
    if(copied <= 0)
    {
@@ -315,61 +268,69 @@ void OnTick()
       return;
    }
 
-   // Build JSON request with strategy parameters
-   Print("Building JSON request with backtest parity parameters...");
+   // Convert to OHLCVBar array for DLL
+   OHLCVBar bars[];
+   ArrayResize(bars, copied);
+
+   for(int i = 0; i < copied; i++)
+   {
+      bars[i].timestamp = (long)rates[i].time;
+      bars[i].open = rates[i].open;
+      bars[i].high = rates[i].high;
+      bars[i].low = rates[i].low;
+      bars[i].close = rates[i].close;
+      bars[i].volume = (int)rates[i].tick_volume;
+   }
+
+   // Determine active parameters (backtest parity mode or user inputs)
+   double active_min_conf = BacktestParityMode ? 0.60 : MinConfidence;
+   double active_cooldown = BacktestParityMode ? 48.0 : BrokenLevelCooldownHours;
+   double active_break_pips = BacktestParityMode ? 15.0 : BrokenLevelBreakPips;
+   double active_min_edge = BacktestParityMode ? 4.0 : MinEdgePips;
+   double active_spread = BacktestParityMode ? 1.0 : SpreadPips;
+   double active_slippage = BacktestParityMode ? 0.5 : SlippagePips;
+   double active_commission = BacktestParityMode ? 7.0 : CommissionPerSidePerLot;
+   double active_usd_pip = BacktestParityMode ? 10.0 : UsdPerPipPerLot;
+   double active_lot = BacktestParityMode ? 1.0 : LotSize;
+
+   Print("Calling DLL: GetVolarix4Signal()");
    Print("  Symbol: ", SymbolToCheck);
    Print("  Timeframe: ", TimeframeToString(Timeframe));
    Print("  Bars to send: ", copied);
+   Print("  Min Confidence: ", active_min_conf);
+   Print("  Min Edge (pips): ", active_min_edge);
 
-   if(BacktestParityMode)
-   {
-      Print("  >>> BACKTEST PARITY MODE: Using best backtest params <<<");
-      Print("  MinConfidence: 0.60, Cooldown: 48.0h, MinEdge: 4.0 pips");
-   }
-
-   string json_request = BuildJSONRequest(rates, copied);
-
-   // Prepare HTTP headers
-   string headers = "Content-Type: application/json\r\n";
-
-   // Prepare result arrays
-   char post_data[];
-   char result_data[];
-   string result_headers;
-
-   // Convert JSON string to char array
-   StringToCharArray(json_request, post_data, 0, StringLen(json_request), CP_UTF8);
-
-   // Call API using WebRequest
-   Print("Calling Volarix 4 API via WebRequest...");
-   Print("  URL: ", API_URL, "/signal");
-
+   // Call DLL to get signal from API
    ResetLastError();
-   int timeout = 10000;  // 10 second timeout
-   int res = WebRequest(
-      "POST",
-      API_URL + "/signal",
-      headers,
-      timeout,
-      post_data,
-      result_data,
-      result_headers
+   string response = GetVolarix4Signal(
+      SymbolToCheck,
+      TimeframeToString(Timeframe),
+      bars,
+      copied,
+      API_URL,
+      active_min_conf,
+      active_cooldown,
+      active_break_pips,
+      active_min_edge,
+      active_spread,
+      active_slippage,
+      active_commission,
+      active_usd_pip,
+      active_lot
    );
 
-   int web_error = GetLastError();
-   if(res == -1)
+   int dll_error = GetLastError();
+   if(dll_error != 0)
    {
-      PrintFormat("ERROR: WebRequest failed with error code %d", web_error);
+      PrintFormat("ERROR: DLL call failed with error code %d", dll_error);
 
       Print("  Make sure:");
-      Print("    1. Volarix 4 API is running at: ", API_URL);
-      Print("    2. 'Allow WebRequest for listed URL' is enabled in Tools -> Options -> Expert Advisors");
-      Print("    3. Add to allowed URLs: ", API_URL);
+      Print("    1. Volarix4Bridge.dll is in [MT5 Data Folder]\\MQL5\\Libraries\\");
+      Print("    2. 'Allow DLL imports' is enabled in Tools -> Options -> Expert Advisors");
+      Print("    3. The DLL was compiled for x64 architecture");
+      Print("    4. Volarix 4 API is running at: ", API_URL);
       return;
    }
-
-   // Convert result to string
-   string response = CharArrayToString(result_data, 0, ArraySize(result_data), CP_UTF8);
 
    if(StringLen(response) == 0)
    {
