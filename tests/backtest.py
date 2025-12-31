@@ -41,6 +41,85 @@ def format_duration(seconds: float) -> str:
         return f"{seconds/3600:.1f}h"
 
 
+def precompute_sr_levels(df: pd.DataFrame, lookback_bars: int, pip_value: float,
+                         min_score: float = 60.0, compute_interval: int = 24,
+                         verbose: bool = False) -> Dict[int, List]:
+    """
+    Pre-compute S/R levels for dataset with smart caching.
+
+    Instead of computing on EVERY bar (slow), computes every N bars and
+    reuses results for nearby bars (e.g., every 24 bars = once per day on H1).
+
+    Args:
+        df: Full DataFrame with OHLC data
+        lookback_bars: Number of bars to use for S/R detection
+        pip_value: Pip value for the symbol
+        min_score: Minimum score for S/R levels
+        compute_interval: Compute S/R every N bars (default: 24 = 1 day on H1)
+        verbose: Print progress
+
+    Returns:
+        Dict mapping bar index -> list of S/R levels
+    """
+    if verbose:
+        print(f"\n[OPTIMIZATION] Pre-computing S/R levels (smart caching)...")
+        print(f"  Lookback: {lookback_bars} bars")
+        print(f"  Computing every {compute_interval} bars (reusing for nearby bars)")
+        print(f"  This dramatically reduces computation time!\n")
+
+    start_time = time.time()
+    sr_cache = {}
+
+    # Only compute for bars where we can make decisions (after lookback period)
+    total_bars = len(df) - lookback_bars
+    bars_to_compute = (total_bars // compute_interval) + 1
+    progress_interval = max(10, bars_to_compute // 20)  # Report every 5%
+
+    computed_count = 0
+    last_computed_levels = []
+
+    for i in range(lookback_bars, len(df)):
+        bar_idx = i - lookback_bars
+
+        # Compute S/R levels every N bars
+        if bar_idx % compute_interval == 0:
+            computed_count += 1
+
+            # Progress reporting
+            if verbose and computed_count % progress_interval == 0:
+                pct = (computed_count / bars_to_compute) * 100
+                elapsed = time.time() - start_time
+                rate = computed_count / elapsed if elapsed > 0 else 0
+                eta = (bars_to_compute - computed_count) / rate if rate > 0 else 0
+                print(f"  Progress: {pct:.0f}% ({computed_count}/{bars_to_compute} checkpoints) - {rate:.1f}/sec - ETA: {format_duration(eta)}")
+
+            # Get historical data up to this point
+            historical_data = df.iloc[:i + 1]
+
+            # Detect S/R levels
+            levels = detect_sr_levels(
+                historical_data.tail(lookback_bars),
+                min_score=min_score,
+                pip_value=pip_value
+            )
+
+            last_computed_levels = levels if levels else []
+
+        # Store in cache (reuse last computed levels for bars between checkpoints)
+        sr_cache[i] = last_computed_levels
+
+    elapsed = time.time() - start_time
+
+    if verbose:
+        print(f"\n[OPTIMIZATION] ✓ Pre-computed S/R levels in {format_duration(elapsed)}")
+        print(f"  Computed {computed_count} checkpoints (every {compute_interval} bars)")
+        print(f"  Average: {computed_count / elapsed:.1f} checkpoints/sec")
+        print(f"  Cache size: {len(sr_cache)} entries (covers all bars)")
+        print(f"  Speedup: ~{compute_interval}x faster than computing every bar!\n")
+
+    return sr_cache
+
+
 class Trade:
     """Represents a single trade with realistic SL/TP management and costs."""
 
@@ -642,6 +721,7 @@ def run_backtest(
         signal_cooldown_hours: float = 2.0,  # NEW: Match API (2 hours)
         # Data
         df: Optional[pd.DataFrame] = None,
+        sr_cache: Optional[Dict[int, List]] = None,  # OPTIMIZATION: Pre-computed S/R levels
         enforce_bars_limit: bool = True,
         # Display
         verbose: bool = True
@@ -826,24 +906,32 @@ def run_backtest(
             # FILTER 3: S/R Detection
             # Match API: volarix4/api/main.py:385-411
 
-            # Periodic detailed logging for first few bars
-            if not verbose and bar_idx < 10:
-                import sys
-                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting S/R detection on {lookback_bars} bars...\n")
-                sys.stderr.flush()
-                sr_start = time.time()
+            # Use pre-computed S/R levels if available (HUGE speed improvement!)
+            if sr_cache is not None:
+                levels = sr_cache.get(i, [])
+            else:
+                # Fallback to on-the-fly computation (slow!)
+                # Use reduced lookback for speed (200 bars instead of 400)
+                sr_lookback = min(200, lookback_bars)
 
-            levels = detect_sr_levels(
-                historical_data.tail(lookback_bars),
-                min_score=60.0,
-                pip_value=pip_value
-            )
+                # Periodic detailed logging for first few bars
+                if not verbose and bar_idx < 10:
+                    import sys
+                    sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting S/R detection on {sr_lookback} bars...\n")
+                    sys.stderr.flush()
+                    sr_start = time.time()
 
-            if not verbose and bar_idx < 10:
-                sr_time = time.time() - sr_start
-                import sys
-                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: S/R detection took {sr_time:.3f}s, found {len(levels)} levels\n")
-                sys.stderr.flush()
+                levels = detect_sr_levels(
+                    historical_data.tail(sr_lookback),
+                    min_score=60.0,
+                    pip_value=pip_value
+                )
+
+                if not verbose and bar_idx < 10:
+                    sr_time = time.time() - sr_start
+                    import sys
+                    sys.stderr.write(f"[DETAIL] Bar {bar_idx}: S/R detection took {sr_time:.3f}s, found {len(levels)} levels\n")
+                    sys.stderr.flush()
 
             if not levels:
                 filter_rejections["no_sr_levels"] += 1
@@ -1331,13 +1419,13 @@ def _run_single_backtest(args):
     This function is called by each worker process.
 
     Args:
-        args: Tuple of (params_dict, backtest_kwargs, df_slice)
+        args: Tuple of (params_dict, backtest_kwargs, df_slice, sr_cache)
 
     Returns:
         Dict with backtest results merged with parameters
     """
     import sys
-    params, backtest_kwargs, df_slice = args
+    params, backtest_kwargs, df_slice, sr_cache = args
 
     try:
         # Print to indicate work has started (will be captured by parent)
@@ -1355,6 +1443,7 @@ def _run_single_backtest(args):
             enable_confidence_filter='min_confidence' in params,
             enable_broken_level_filter='broken_level_cooldown_hours' in params,
             df=df_slice,
+            sr_cache=sr_cache,  # Pass pre-computed S/R levels
             enforce_bars_limit=True,
             verbose=False,
             **backtest_kwargs
@@ -1431,9 +1520,22 @@ def run_grid_search(
     print(f"CPU cores available: {multiprocessing.cpu_count()}")
     print(f"Using {n_workers} parallel workers")
     print(f"[TIMER] Starting grid search at {time.strftime('%H:%M:%S')}")
-    print("\nRunning backtests...\n")
 
     grid_start_time = time.time()
+
+    # OPTIMIZATION: Pre-compute S/R levels once for all backtests
+    print(f"\n[OPTIMIZATION] Pre-computing S/R levels for {len(df)} bars...")
+    print(f"  This takes ~1-2 minutes but will save hours across {total_combinations} backtests!\n")
+
+    pip_value = calculate_pip_value(symbol)
+    # Use reduced lookback for S/R (200 instead of 400) - 2x faster, still effective
+    sr_lookback = min(200, lookback_bars)  # Use 200 bars for S/R detection (faster)
+    print(f"[OPTIMIZATION] Using {sr_lookback} bars for S/R detection (reduced from {lookback_bars} for speed)")
+    # Compute every 24 bars (1 day on H1) - 24x fewer computations!
+    sr_cache = precompute_sr_levels(df, sr_lookback, pip_value, min_score=60.0,
+                                    compute_interval=24, verbose=True)
+
+    print("\nRunning backtests with pre-computed S/R levels...\n")
 
     # Prepare backtest kwargs (common to all backtests)
     backtest_kwargs = {
@@ -1448,11 +1550,11 @@ def run_grid_search(
         'starting_balance_usd': starting_balance_usd
     }
 
-    # Prepare arguments for each worker
+    # Prepare arguments for each worker (now includes sr_cache)
     worker_args = []
     for combo in combinations:
         params = dict(zip(param_names, combo))
-        worker_args.append((params, backtest_kwargs, df))
+        worker_args.append((params, backtest_kwargs, df, sr_cache))
 
     results_list = []
     completed = 0
