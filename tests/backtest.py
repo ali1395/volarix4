@@ -1463,32 +1463,32 @@ def run_grid_search(
 
                 # Process results as they complete
                 for future in as_completed(future_to_params):
-                params = future_to_params[future]
-                completed += 1
+                    params = future_to_params[future]
+                    completed += 1
 
-                # Calculate ETA
-                elapsed = time.time() - grid_start_time
-                if completed > 0:
-                    avg_time_per_combo = elapsed / completed
-                    remaining = total_combinations - completed
-                    eta = avg_time_per_combo * remaining
-                    eta_str = f" (ETA: {format_duration(eta)})"
-                else:
-                    eta_str = ""
-
-                try:
-                    result = future.result()
-
-                    if 'profit_factor' in result:
-                        results_list.append(result)
-                        print(f"[{completed}/{total_combinations}] ✓ {params} → PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}{eta_str}")
+                    # Calculate ETA
+                    elapsed = time.time() - grid_start_time
+                    if completed > 0:
+                        avg_time_per_combo = elapsed / completed
+                        remaining = total_combinations - completed
+                        eta = avg_time_per_combo * remaining
+                        eta_str = f" (ETA: {format_duration(eta)})"
                     else:
-                        failed += 1
-                        print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}{eta_str}")
+                        eta_str = ""
 
-                except Exception as e:
-                    failed += 1
-                    print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}{eta_str}")
+                    try:
+                        result = future.result()
+
+                        if 'profit_factor' in result:
+                            results_list.append(result)
+                            print(f"[{completed}/{total_combinations}] ✓ {params} → PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}{eta_str}")
+                        else:
+                            failed += 1
+                            print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}{eta_str}")
+
+                    except Exception as e:
+                        failed += 1
+                        print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}{eta_str}")
 
         finally:
             # Stop heartbeat thread
