@@ -2,6 +2,7 @@
 
 import MetaTrader5 as mt5
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from typing import Optional
 from volarix4.config import CONFIG
@@ -91,24 +92,28 @@ def fetch_ohlc(symbol: str, timeframe: str, bars: int, end_time: Optional[dateti
     # Fetch data
     if end_time is not None:
         # Fetch bars before the specified time (not including it)
-        # We use copy_rates_from with position 1 to skip the bar at end_time
-        rates = mt5.copy_rates_from(symbol, mt5_timeframe, end_time, bars)
+        end_timestamp = int(end_time.timestamp())
 
-        if rates is None or len(rates) == 0:
+        # Fetch more bars than needed to ensure we have enough after filtering
+        fetch_count = bars * 2  # Fetch 2x to account for potential filtering
+        rates_raw = mt5.copy_rates_from(symbol, mt5_timeframe, end_time, fetch_count)
+
+        if rates_raw is None or len(rates_raw) == 0:
             raise Exception(f"Failed to fetch data for {symbol} before {end_time}, error: {mt5.last_error()}")
 
-        # Filter out bars >= end_time to ensure we don't include the current bar
-        end_timestamp = int(end_time.timestamp())
-        rates = [r for r in rates if r['time'] < end_timestamp]
+        # Filter to keep only bars before end_time (exclude the current bar)
+        # Convert to list to filter, then convert back to numpy array
+        filtered_rates = [r for r in rates_raw if r['time'] < end_timestamp]
 
-        # If we don't have enough bars after filtering, fetch more
-        if len(rates) < bars:
-            # Fetch more bars to compensate
-            rates = mt5.copy_rates_from(symbol, mt5_timeframe, end_time, bars + 10)
-            if rates is not None:
-                rates = [r for r in rates if r['time'] < end_timestamp]
-                # Take the last N bars
-                rates = rates[-bars:] if len(rates) > bars else rates
+        if len(filtered_rates) == 0:
+            raise Exception(f"No bars found before {end_time} for {symbol}")
+
+        # Take the last N bars (most recent bars before end_time)
+        if len(filtered_rates) > bars:
+            filtered_rates = filtered_rates[-bars:]
+
+        # Convert back to numpy array for DataFrame creation
+        rates = np.array(filtered_rates, dtype=rates_raw.dtype)
     else:
         # Fetch data from current position (most recent bars)
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, bars)
