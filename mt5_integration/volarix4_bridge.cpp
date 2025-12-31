@@ -47,14 +47,24 @@ void WriteDebugLog(const char* message)
 }
 
 //=============================================================================
-//  Main DLL Function: GetVolarix4Signal
+//  Main DLL Function: GetVolarix4Signal (Updated for API v4)
 //=============================================================================
 extern "C" __declspec(dllexport)
 BSTR __stdcall GetVolarix4Signal(
     const wchar_t* symbol,
     const wchar_t* timeframe,
     OHLCVBar* bars,
-    int barCount)
+    int barCount,
+    const wchar_t* apiUrl,
+    double minConfidence,
+    double brokenLevelCooldownHours,
+    double brokenLevelBreakPips,
+    double minEdgePips,
+    double spreadPips,
+    double slippagePips,
+    double commissionPerSidePerLot,
+    double usdPerPipPerLot,
+    double lotSize)
 {
     // Debug: Log struct size to verify packing
     std::stringstream struct_debug;
@@ -101,12 +111,21 @@ BSTR __stdcall GetVolarix4Signal(
 
     data_array << "]";
 
-    // Build complete JSON payload (matching Volarix 4 API)
+    // Build complete JSON payload (matching Volarix 4 API with new parameters)
     std::stringstream payload;
     payload << "{"
         << "\"symbol\":\"" << sym << "\","
         << "\"timeframe\":\"" << tf << "\","
-        << "\"data\":" << data_array.str()
+        << "\"data\":" << data_array.str() << ","
+        << "\"min_confidence\":" << std::fixed << std::setprecision(2) << minConfidence << ","
+        << "\"broken_level_cooldown_hours\":" << std::fixed << std::setprecision(1) << brokenLevelCooldownHours << ","
+        << "\"broken_level_break_pips\":" << std::fixed << std::setprecision(1) << brokenLevelBreakPips << ","
+        << "\"min_edge_pips\":" << std::fixed << std::setprecision(1) << minEdgePips << ","
+        << "\"spread_pips\":" << std::fixed << std::setprecision(1) << spreadPips << ","
+        << "\"slippage_pips\":" << std::fixed << std::setprecision(1) << slippagePips << ","
+        << "\"commission_per_side_per_lot\":" << std::fixed << std::setprecision(1) << commissionPerSidePerLot << ","
+        << "\"usd_per_pip_per_lot\":" << std::fixed << std::setprecision(1) << usdPerPipPerLot << ","
+        << "\"lot_size\":" << std::fixed << std::setprecision(2) << lotSize
         << "}";
 
     std::string payload_str = payload.str();
@@ -121,6 +140,29 @@ BSTR __stdcall GetVolarix4Signal(
     WriteDebugLog(debug_msg.str().c_str());
 
     //=========================================================================
+    //  Parse API URL to extract host and port
+    //=========================================================================
+    std::wstring ws_apiUrl(apiUrl);
+    std::string api_url_str(ws_apiUrl.begin(), ws_apiUrl.end());
+
+    // Parse URL (expecting format: http://host:port)
+    std::string host = "localhost";
+    int port = 8000;
+
+    size_t proto_end = api_url_str.find("://");
+    if (proto_end != std::string::npos) {
+        std::string url_part = api_url_str.substr(proto_end + 3);
+        size_t port_pos = url_part.find(":");
+        if (port_pos != std::string::npos) {
+            host = url_part.substr(0, port_pos);
+            std::string port_str = url_part.substr(port_pos + 1);
+            port = std::stoi(port_str);
+        } else {
+            host = url_part;
+        }
+    }
+
+    //=========================================================================
     //  HTTP POST to Volarix 4 API
     //=========================================================================
 
@@ -133,10 +175,10 @@ BSTR __stdcall GetVolarix4Signal(
         return SysAllocString(L"{\"error\":\"InternetOpen failed\"}");
     }
 
-    // Connect to server (change localhost to your server IP if needed)
+    // Connect to server using parsed host and port
     HINTERNET hConnect = InternetConnectA(hInternet,
-        "localhost",  // Change to your API server IP
-        8000,         // Volarix 4 default port
+        host.c_str(),  // Parsed from API URL
+        port,          // Parsed from API URL
         NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
 
     if (!hConnect) {

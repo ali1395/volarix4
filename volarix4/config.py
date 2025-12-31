@@ -67,7 +67,7 @@ BACKTEST_PARITY_CONFIG = {
 # Session Times (EST hours)
 SESSIONS: Dict[str, Tuple[int, int]] = {
     "london": (3, 11),    # 3am - 11am EST
-    "ny": (8, 16)         # 8am - 4pm EST
+    "ny": (8, 22)         # 8am - 10pm EST (extended to cover full NY session)
 }
 
 # API Settings
