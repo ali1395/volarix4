@@ -775,9 +775,25 @@ def run_backtest(
     if verbose:
         print(f"\nRunning simulation...")
 
+    # Progress tracking for worker processes
+    total_bars = len(df) - lookback_bars
+    progress_interval = max(500, total_bars // 10)  # Log every 10% or 500 bars
+    last_progress_time = time.time()
+
     for i in range(lookback_bars, len(df)):
         current_bar = df.iloc[i]
         current_time = current_bar['time']
+
+        # Progress logging for workers (not verbose mode)
+        bar_idx = i - lookback_bars
+        if not verbose and bar_idx > 0 and bar_idx % progress_interval == 0:
+            elapsed = time.time() - last_progress_time
+            pct = (bar_idx / total_bars) * 100
+            bars_per_sec = progress_interval / elapsed if elapsed > 0 else 0
+            import sys
+            sys.stderr.write(f"[PROGRESS] {pct:.0f}% ({bar_idx}/{total_bars} bars) - {bars_per_sec:.1f} bars/sec\n")
+            sys.stderr.flush()
+            last_progress_time = time.time()
 
         # Update open trade
         if open_trade:
@@ -809,11 +825,25 @@ def run_backtest(
 
             # FILTER 3: S/R Detection
             # Match API: volarix4/api/main.py:385-411
+
+            # Periodic detailed logging for first few bars
+            if not verbose and bar_idx < 10:
+                import sys
+                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting S/R detection on {lookback_bars} bars...\n")
+                sys.stderr.flush()
+                sr_start = time.time()
+
             levels = detect_sr_levels(
                 historical_data.tail(lookback_bars),
                 min_score=60.0,
                 pip_value=pip_value
             )
+
+            if not verbose and bar_idx < 10:
+                sr_time = time.time() - sr_start
+                import sys
+                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: S/R detection took {sr_time:.3f}s, found {len(levels)} levels\n")
+                sys.stderr.flush()
 
             if not levels:
                 filter_rejections["no_sr_levels"] += 1
@@ -868,12 +898,25 @@ def run_backtest(
 
             # FILTER 5: Rejection Search
             # Match API: volarix4/api/main.py:467-556
+
+            if not verbose and bar_idx < 10:
+                import sys
+                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting rejection search...\n")
+                sys.stderr.flush()
+                rej_start = time.time()
+
             rejection = find_rejection_candle(
                 historical_data.tail(20),
                 levels,
                 lookback=5,
                 pip_value=pip_value
             )
+
+            if not verbose and bar_idx < 10:
+                rej_time = time.time() - rej_start
+                import sys
+                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Rejection search took {rej_time:.3f}s\n")
+                sys.stderr.flush()
 
             if not rejection:
                 signals_generated["HOLD"] += 1
