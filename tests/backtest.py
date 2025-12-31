@@ -882,16 +882,16 @@ def run_backtest(
             # FILTER 7: Trend Alignment Validation (with bypass for high confidence)
             # Match API: volarix4/api/main.py:558-626
             if enable_trend_filter and trend_info is not None:
-                # Check if signal aligns with trend, allow bypass for high confidence
+                # Check if signal aligns with trend
                 trend_result = validate_signal_with_trend(
                     signal_direction=direction,
-                    trend_info=trend_info,
-                    confidence=confidence,
-                    min_confidence_for_bypass=0.75,  # Match API
-                    logger=None  # No logger in backtest
+                    trend_info=trend_info
                 )
 
-                if not trend_result['allow_trade']:
+                # Allow bypass for high confidence (match API logic)
+                high_confidence_override = confidence > 0.75 and rejection.get('level_score', 0) >= 80.0
+
+                if not trend_result['valid'] and not high_confidence_override:
                     filter_rejections["trend_alignment"] += 1
                     signals_generated["HOLD"] += 1
                     continue
