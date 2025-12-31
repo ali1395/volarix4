@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import numpy as np
+import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from itertools import product
@@ -28,6 +29,16 @@ from volarix4.core.rejection import find_rejection_candle
 from volarix4.core.trade_setup import calculate_sl_tp
 from volarix4.core.trend_filter import detect_trend, validate_signal_with_trend
 from volarix4.utils.helpers import calculate_pip_value
+
+
+def format_duration(seconds: float) -> str:
+    """Format duration in human-readable format."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        return f"{seconds/60:.1f}m"
+    else:
+        return f"{seconds/3600:.1f}h"
 
 
 class Trade:
@@ -1359,7 +1370,10 @@ def run_grid_search(
     print(f"\nTotal combinations: {total_combinations}")
     print(f"CPU cores available: {multiprocessing.cpu_count()}")
     print(f"Using {n_workers} parallel workers")
+    print(f"[TIMER] Starting grid search at {time.strftime('%H:%M:%S')}")
     print("\nRunning backtests...\n")
+
+    grid_start_time = time.time()
 
     # Prepare backtest kwargs (common to all backtests)
     backtest_kwargs = {
@@ -1412,19 +1426,29 @@ def run_grid_search(
                 params = future_to_params[future]
                 completed += 1
 
+                # Calculate ETA
+                elapsed = time.time() - grid_start_time
+                if completed > 0:
+                    avg_time_per_combo = elapsed / completed
+                    remaining = total_combinations - completed
+                    eta = avg_time_per_combo * remaining
+                    eta_str = f" (ETA: {format_duration(eta)})"
+                else:
+                    eta_str = ""
+
                 try:
                     result = future.result()
 
                     if 'profit_factor' in result:
                         results_list.append(result)
-                        print(f"[{completed}/{total_combinations}] ✓ Completed: {params} - PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}")
+                        print(f"[{completed}/{total_combinations}] ✓ {params} → PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}{eta_str}")
                     else:
                         failed += 1
-                        print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}")
+                        print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}{eta_str}")
 
                 except Exception as e:
                     failed += 1
-                    print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}")
+                    print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}{eta_str}")
 
     # Create DataFrame
     df_results = pd.DataFrame(results_list)
@@ -1435,9 +1459,15 @@ def run_grid_search(
     else:
         print("\nWARNING: No successful backtests to display")
 
+    grid_total_time = time.time() - grid_start_time
+    avg_time_per_backtest = grid_total_time / total_combinations if total_combinations > 0 else 0
+
     print("\n" + "=" * 70)
     print("GRID SEARCH COMPLETE")
     print("=" * 70)
+    print(f"[TIMER] Grid search completed in {format_duration(grid_total_time)}")
+    print(f"  • Average time per backtest: {format_duration(avg_time_per_backtest)}")
+    print(f"  • Throughput: {total_combinations / (grid_total_time / 60):.1f} backtests/minute")
     print(f"\nSummary:")
     print(f"  Total tests: {total_combinations}")
     print(f"  Successful: {len(results_list)}")
@@ -1474,20 +1504,27 @@ def _run_year_based_walk_forward(
     Returns:
         DataFrame with results for each year
     """
+    overall_start = time.time()
     split_results = []
     all_train_results = []
     param_stability_data = []
 
     for split_idx, test_year in enumerate(test_years):
+        split_start = time.time()
+
         print("\n" + "-" * 70)
         print(f"YEAR {test_year} (Split {split_idx + 1}/{len(test_years)})")
         print("-" * 70)
+        print(f"[TIMER] Starting year {test_year} at {time.strftime('%H:%M:%S')}")
 
         # Define train and test periods
         train_start_year = test_year - 2
         train_end_year = test_year - 1
 
         # Filter data by year
+        data_prep_start = time.time()
+        print(f"[STEP 1/3] Preparing data...")
+
         train_start_date = pd.Timestamp(f"{train_start_year}-01-01")
         train_end_date = pd.Timestamp(f"{test_year}-01-01")  # Exclusive
         test_start_date = pd.Timestamp(f"{test_year}-01-01")
@@ -1542,8 +1579,13 @@ def _run_year_based_walk_forward(
         print(f"  Evaluation bars: {test_bars}")
         print(f"  Time: {test_df['time'].iloc[lookback_bars]} to {test_df['time'].iloc[-1]}")
 
+        data_prep_time = time.time() - data_prep_start
+        print(f"[TIMER] Data preparation took {format_duration(data_prep_time)}")
+
         # TRAIN: Run grid search on training years
-        print(f"\n[TRAIN] Running grid search on {train_start_year}-{train_end_year} ({train_bars} bars)...")
+        grid_search_start = time.time()
+        print(f"\n[STEP 2/3] Running grid search on training data...")
+        print(f"[TRAIN] Grid search on {train_start_year}-{train_end_year} ({train_bars} bars)...")
 
         train_results = run_grid_search(
             param_grid=param_grid,
@@ -1564,6 +1606,9 @@ def _run_year_based_walk_forward(
             print(f"\n✗ No successful backtests in training - skipping year {test_year}")
             continue
 
+        grid_search_time = time.time() - grid_search_start
+        print(f"[TIMER] Grid search took {format_duration(grid_search_time)}")
+
         # Select best parameters (by profit_factor, then total_pnl_after_costs)
         train_results_sorted = train_results.sort_values(
             by=['profit_factor', 'total_pnl_after_costs'],
@@ -1580,7 +1625,9 @@ def _run_year_based_walk_forward(
         print(f"  Train PnL: {best_params['total_pnl_after_costs']:.2f} pips")
 
         # TEST: Run backtest on test year with best params
-        print(f"\n[TEST] Testing on {test_year} ({test_bars} bars) with best params...")
+        test_start = time.time()
+        print(f"\n[STEP 3/3] Running test on {test_year}...")
+        print(f"[TEST] Testing on {test_year} ({test_bars} bars) with best params...")
 
         test_result = run_backtest(
             min_confidence=best_params['min_confidence'],
@@ -1603,6 +1650,9 @@ def _run_year_based_walk_forward(
             print(f"\n✗ Test backtest failed or no trades - skipping year {test_year}")
             continue
 
+        test_time = time.time() - test_start
+        print(f"[TIMER] Test run took {format_duration(test_time)}")
+
         test_trades = test_result.get('trades', [])
 
         print(f"\n[TEST] Year {test_year} Results:")
@@ -1617,6 +1667,12 @@ def _run_year_based_walk_forward(
 
         print(f"\nPerformance Degradation:")
         print(f"  PF Ratio (test/train): {pf_degradation:.2f}")
+
+        split_time = time.time() - split_start
+        print(f"\n[TIMER] Year {test_year} completed in {format_duration(split_time)}")
+        print(f"  • Data prep: {format_duration(data_prep_time)}")
+        print(f"  • Grid search: {format_duration(grid_search_time)}")
+        print(f"  • Test run: {format_duration(test_time)}")
 
         # Store split results
         split_result = {
@@ -1673,10 +1729,13 @@ def _run_year_based_walk_forward(
         print("\n✗ No successful year-based splits")
         return df_results
 
+    overall_time = time.time() - overall_start
+
     # Print summary statistics
     print("\n" + "=" * 70)
     print("YEAR-BASED WALK-FORWARD SUMMARY")
     print("=" * 70)
+    print(f"[TIMER] Total execution time: {format_duration(overall_time)}")
 
     print(f"\nCompleted years: {len(df_results)}/{len(test_years)}")
 
@@ -2634,11 +2693,20 @@ if __name__ == "__main__":
         # Run walk-forward analysis (YEAR-BASED)
         print("\n>>> Running Year-Based Walk-Forward Analysis\n")
 
+        # Reduced grid for faster testing (3×2×2 = 12 combinations vs 27)
+        # This cuts runtime by ~55% while still exploring key parameter space
         param_grid = {
-            'min_confidence': [0.60, 0.65, 0.70],
-            'broken_level_cooldown_hours': [12.0, 24.0, 48.0],
-            'min_edge_pips': [0.0, 2.0, 4.0]
+            'min_confidence': [0.60, 0.65, 0.70],  # Keep 3 values
+            'broken_level_cooldown_hours': [24.0, 48.0],  # Reduce to 2 (drop 12.0)
+            'min_edge_pips': [2.0, 4.0]  # Reduce to 2 (drop 0.0)
         }
+
+        # For comprehensive testing, use full grid:
+        # param_grid = {
+        #     'min_confidence': [0.60, 0.65, 0.70],
+        #     'broken_level_cooldown_hours': [12.0, 24.0, 48.0],
+        #     'min_edge_pips': [0.0, 2.0, 4.0]
+        # }
 
         wf_results = run_walk_forward(
             symbol="EURUSD",
