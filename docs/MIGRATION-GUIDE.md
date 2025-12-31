@@ -214,7 +214,7 @@ curl http://localhost:8000/health
 
 ### Code Compatibility: ⚠️ **REQUIRES UPDATES**
 - Internal imports need updating (see Step 2 above)
-- Old root-level files moved to `_old_root_files/` (backup)
+- Old root-level files removed (superseded by volarix4/ package)
 
 ## Troubleshooting
 
@@ -267,18 +267,11 @@ python run.py
 
 ## Rollback (If Needed)
 
-If you encounter issues and need to rollback:
+**Note:** The old root-level files have been removed as the package structure is now stable and production-ready.
 
-```bash
-# 1. Stop the new version
-pkill -f "uvicorn volarix4"
-
-# 2. Restore old files
-cp _old_root_files/* .
-
-# 3. Start old version
-python main.py
-```
+If you need an older version:
+1. Check out the previous commit from git history
+2. Or download a previous release from GitHub
 
 ## Getting Help
 
