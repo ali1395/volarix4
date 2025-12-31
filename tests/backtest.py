@@ -1448,6 +1448,266 @@ def run_grid_search(
     return df_results
 
 
+def _run_year_based_walk_forward(
+        df_full: pd.DataFrame,
+        test_years: List[int],
+        symbol: str,
+        timeframe: str,
+        lookback_bars: int,
+        param_grid: Dict,
+        spread_pips: float,
+        commission_per_side_per_lot: float,
+        slippage_pips: float,
+        usd_per_pip_per_lot: float,
+        starting_balance_usd: float,
+        broken_level_break_pips: float,
+        n_jobs: int
+) -> pd.DataFrame:
+    """
+    Run year-based walk-forward: train on 2 previous years, test on each target year.
+
+    Args:
+        df_full: Full DataFrame with all data
+        test_years: List of years to test (e.g., [2022, 2023, 2024, 2025])
+        Other args: Same as run_walk_forward
+
+    Returns:
+        DataFrame with results for each year
+    """
+    split_results = []
+    all_train_results = []
+    param_stability_data = []
+
+    for split_idx, test_year in enumerate(test_years):
+        print("\n" + "-" * 70)
+        print(f"YEAR {test_year} (Split {split_idx + 1}/{len(test_years)})")
+        print("-" * 70)
+
+        # Define train and test periods
+        train_start_year = test_year - 2
+        train_end_year = test_year - 1
+
+        # Filter data by year
+        train_start_date = pd.Timestamp(f"{train_start_year}-01-01")
+        train_end_date = pd.Timestamp(f"{test_year}-01-01")  # Exclusive
+        test_start_date = pd.Timestamp(f"{test_year}-01-01")
+        test_end_date = pd.Timestamp(f"{test_year + 1}-01-01")  # Exclusive
+
+        print(f"\nTrain period: {train_start_year}-{train_end_year} (2 years)")
+        print(f"  Date range: {train_start_date.date()} to {train_end_date.date()}")
+        print(f"\nTest period: {test_year} (1 year)")
+        print(f"  Date range: {test_start_date.date()} to {test_end_date.date()}")
+
+        # Extract train data
+        train_mask = (df_full['time'] >= train_start_date) & (df_full['time'] < train_end_date)
+        train_data_only = df_full[train_mask].copy()
+
+        if len(train_data_only) == 0:
+            print(f"\n✗ No training data for {train_start_year}-{train_end_year}")
+            continue
+
+        # Add lookback bars before training period
+        train_lookback_start_idx = df_full[train_mask].index[0] - lookback_bars
+        if train_lookback_start_idx < 0:
+            print(f"\n✗ Insufficient lookback bars for training period")
+            continue
+
+        train_df = df_full.iloc[train_lookback_start_idx:df_full[train_mask].index[-1] + 1].copy()
+        train_bars = len(train_data_only)
+
+        # Extract test data
+        test_mask = (df_full['time'] >= test_start_date) & (df_full['time'] < test_end_date)
+        test_data_only = df_full[test_mask].copy()
+
+        if len(test_data_only) == 0:
+            print(f"\n✗ No test data for {test_year}")
+            continue
+
+        # Add lookback bars before test period
+        test_lookback_start_idx = df_full[test_mask].index[0] - lookback_bars
+        if test_lookback_start_idx < 0:
+            print(f"\n✗ Insufficient lookback bars for test period")
+            continue
+
+        test_df = df_full.iloc[test_lookback_start_idx:df_full[test_mask].index[-1] + 1].copy()
+        test_bars = len(test_data_only)
+
+        print(f"\nTrain segment:")
+        print(f"  Total bars (with lookback): {len(train_df)}")
+        print(f"  Evaluation bars: {train_bars}")
+        print(f"  Time: {train_df['time'].iloc[lookback_bars]} to {train_df['time'].iloc[-1]}")
+
+        print(f"\nTest segment:")
+        print(f"  Total bars (with lookback): {len(test_df)}")
+        print(f"  Evaluation bars: {test_bars}")
+        print(f"  Time: {test_df['time'].iloc[lookback_bars]} to {test_df['time'].iloc[-1]}")
+
+        # TRAIN: Run grid search on training years
+        print(f"\n[TRAIN] Running grid search on {train_start_year}-{train_end_year} ({train_bars} bars)...")
+
+        train_results = run_grid_search(
+            param_grid=param_grid,
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=train_bars,
+            lookback_bars=lookback_bars,
+            spread_pips=spread_pips,
+            commission_per_side_per_lot=commission_per_side_per_lot,
+            slippage_pips=slippage_pips,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
+            starting_balance_usd=starting_balance_usd,
+            df=train_df,
+            n_jobs=n_jobs
+        )
+
+        if len(train_results) == 0:
+            print(f"\n✗ No successful backtests in training - skipping year {test_year}")
+            continue
+
+        # Select best parameters (by profit_factor, then total_pnl_after_costs)
+        train_results_sorted = train_results.sort_values(
+            by=['profit_factor', 'total_pnl_after_costs'],
+            ascending=[False, False]
+        )
+        best_params = train_results_sorted.iloc[0]
+
+        print(f"\n[TRAIN] Best parameters found:")
+        print(f"  min_confidence: {best_params['min_confidence']}")
+        print(f"  broken_level_cooldown_hours: {best_params['broken_level_cooldown_hours']}")
+        print(f"  min_edge_pips: {best_params['min_edge_pips']}")
+        print(f"  Train Profit Factor: {best_params['profit_factor']:.2f}")
+        print(f"  Train Total Trades: {best_params['total_trades']:.0f}")
+        print(f"  Train PnL: {best_params['total_pnl_after_costs']:.2f} pips")
+
+        # TEST: Run backtest on test year with best params
+        print(f"\n[TEST] Testing on {test_year} ({test_bars} bars) with best params...")
+
+        test_result = run_backtest(
+            min_confidence=best_params['min_confidence'],
+            broken_level_cooldown_hours=best_params['broken_level_cooldown_hours'],
+            min_edge_pips=best_params['min_edge_pips'],
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=test_bars,
+            lookback_bars=lookback_bars,
+            spread_pips=spread_pips,
+            commission_per_side_per_lot=commission_per_side_per_lot,
+            slippage_pips=slippage_pips,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
+            starting_balance_usd=starting_balance_usd,
+            broken_level_break_pips=broken_level_break_pips,
+            df=test_df
+        )
+
+        if test_result is None or test_result['total_trades'] == 0:
+            print(f"\n✗ Test backtest failed or no trades - skipping year {test_year}")
+            continue
+
+        test_trades = test_result.get('trades', [])
+
+        print(f"\n[TEST] Year {test_year} Results:")
+        print(f"  Profit Factor: {test_result['profit_factor']:.2f}")
+        print(f"  Total Trades: {test_result['total_trades']:.0f}")
+        print(f"  Win Rate: {test_result['win_rate']:.1f}%")
+        print(f"  PnL: {test_result['total_pnl_after_costs']:.2f} pips")
+        print(f"  Max Drawdown: {test_result['max_drawdown']:.2f} pips ({test_result['max_drawdown_pct']:.2f}%)")
+
+        # Calculate performance degradation
+        pf_degradation = test_result['profit_factor'] / best_params['profit_factor'] if best_params['profit_factor'] > 0 else 0
+
+        print(f"\nPerformance Degradation:")
+        print(f"  PF Ratio (test/train): {pf_degradation:.2f}")
+
+        # Store split results
+        split_result = {
+            'split': split_idx + 1,
+            'test_year': test_year,
+            'train_years': f"{train_start_year}-{train_end_year}",
+            'train_bars': train_bars,
+            'test_bars': test_bars,
+
+            # Best parameters
+            'param_min_confidence': best_params['min_confidence'],
+            'param_broken_level_cooldown_hours': best_params['broken_level_cooldown_hours'],
+            'param_min_edge_pips': best_params['min_edge_pips'],
+
+            # Train metrics
+            'train_total_trades': best_params['total_trades'],
+            'train_win_rate': best_params['win_rate'],
+            'train_profit_factor': best_params['profit_factor'],
+            'train_total_pnl_after_costs': best_params['total_pnl_after_costs'],
+            'train_max_drawdown': best_params['max_drawdown'],
+
+            # Test metrics
+            'test_total_trades': test_result['total_trades'],
+            'test_win_rate': test_result['win_rate'],
+            'test_profit_factor': test_result['profit_factor'],
+            'test_total_pnl_after_costs': test_result['total_pnl_after_costs'],
+            'test_max_drawdown': test_result['max_drawdown'],
+            'test_max_drawdown_pct': test_result['max_drawdown_pct'],
+            'test_largest_win_pips': test_result['largest_win_pips'],
+            'test_largest_loss_pips': test_result['largest_loss_pips'],
+
+            # Degradation metrics
+            'pf_degradation': pf_degradation,
+            'expected_payoff_degradation': (test_result['expected_payoff'] / best_params['expected_payoff'])
+                                          if best_params['expected_payoff'] > 0 else 0
+        }
+
+        split_results.append(split_result)
+
+        # Store training results for later analysis
+        all_train_results.append({
+            'split': split_idx + 1,
+            'test_year': test_year,
+            'train_results': train_results,
+            'best_params': best_params,
+            'test_profit_factor': test_result['profit_factor'],
+            'test_total_pnl_after_costs': test_result['total_pnl_after_costs']
+        })
+
+    # Convert to DataFrame
+    df_results = pd.DataFrame(split_results)
+
+    if len(df_results) == 0:
+        print("\n✗ No successful year-based splits")
+        return df_results
+
+    # Print summary statistics
+    print("\n" + "=" * 70)
+    print("YEAR-BASED WALK-FORWARD SUMMARY")
+    print("=" * 70)
+
+    print(f"\nCompleted years: {len(df_results)}/{len(test_years)}")
+
+    # Overall test performance
+    total_test_trades = df_results['test_total_trades'].sum()
+    total_test_pnl = df_results['test_total_pnl_after_costs'].sum()
+    avg_test_pf = df_results['test_profit_factor'].mean()
+
+    print(f"\nOverall Test Performance:")
+    print(f"{'Total trades across all years':<40} {total_test_trades:.0f}")
+    print(f"{'Total PnL across all years':<40} {total_test_pnl:.2f} pips")
+    print(f"{'Average Profit Factor':<40} {avg_test_pf:.2f}")
+
+    # Per-year statistics
+    print(f"\n{'Mean Profit Factor (per year)':<40} {df_results['test_profit_factor'].mean():.2f}")
+    print(f"{'Median Profit Factor (per year)':<40} {df_results['test_profit_factor'].median():.2f}")
+    print(f"{'Mean PnL per year':<40} {df_results['test_total_pnl_after_costs'].mean():.2f} pips")
+
+    # Profitable years
+    profitable_years = (df_results['test_total_pnl_after_costs'] > 0).sum()
+    print(f"\n{'Profitable years':<40} {profitable_years}/{len(df_results)} ({profitable_years/len(df_results)*100:.1f}%)")
+
+    # Parameter stability
+    print(f"\nParameter Stability:")
+    print(f"{'Unique min_confidence values':<40} {df_results['param_min_confidence'].nunique()}")
+    print(f"{'Unique cooldown values':<40} {df_results['param_broken_level_cooldown_hours'].nunique()}")
+    print(f"{'Unique min_edge values':<40} {df_results['param_min_edge_pips'].nunique()}")
+
+    return df_results
+
+
 def run_walk_forward(
         symbol: str = "EURUSD",
         timeframe: str = "H1",
@@ -1463,7 +1723,9 @@ def run_walk_forward(
         usd_per_pip_per_lot: float = 10.0,
         starting_balance_usd: float = 10000.0,
         broken_level_break_pips: float = 15.0,
-        n_jobs: int = -1
+        n_jobs: int = -1,
+        use_year_based_splits: bool = False,
+        test_years: Optional[List[int]] = None
 ) -> pd.DataFrame:
     """
     Run walk-forward analysis: train on one segment, test on next segment.
@@ -1472,29 +1734,24 @@ def run_walk_forward(
 
     Args:
         symbol, timeframe: Trading pair and timeframe
-        total_bars: Total bars to fetch from MT5
+        total_bars: Total bars to fetch from MT5 (ignored if use_year_based_splits=True)
         lookback_bars: Bars needed for indicator calculation
-        splits: Number of train/test windows
-        train_bars: Size of training segment
-        test_bars: Size of testing segment
+        splits: Number of train/test windows (ignored if use_year_based_splits=True)
+        train_bars: Size of training segment (ignored if use_year_based_splits=True)
+        test_bars: Size of testing segment (ignored if use_year_based_splits=True)
         param_grid: Parameters to optimize (default: min_confidence + cooldown)
         spread_pips, commission_per_side_per_lot, slippage_pips, usd_per_pip_per_lot: Cost settings
         broken_level_break_pips: Pips beyond level to mark as broken
         n_jobs: Number of parallel workers for grid search
+        use_year_based_splits: If True, use year-based train/test splits
+        test_years: List of years to test on (e.g., [2022, 2023, 2024, 2025])
+                    For each year, trains on 2 previous years
 
     Returns:
         DataFrame with one row per split containing train/test results
     """
     print("\n" + "=" * 70)
     print("WALK-FORWARD ANALYSIS")
-    print("=" * 70)
-    print(f"\nConfiguration:")
-    print(f"  Symbol: {symbol} {timeframe}")
-    print(f"  Total bars: {total_bars} (+ {lookback_bars} lookback)")
-    print(f"  Splits: {splits}")
-    print(f"  Train bars: {train_bars}")
-    print(f"  Test bars: {test_bars}")
-    print(f"  Segment size: {train_bars + test_bars} bars")
     print("=" * 70)
 
     # Default param grid if not provided
@@ -1505,30 +1762,96 @@ def run_walk_forward(
             'min_edge_pips': [0.0, 2.0, 4.0]
         }
 
-    # Fetch data once
-    print(f"\nFetching {total_bars + lookback_bars} bars from MT5...")
-    try:
-        df_full = fetch_ohlc(symbol, timeframe, total_bars + lookback_bars)
-        if df_full is None or len(df_full) < lookback_bars + train_bars + test_bars:
-            print(f"✗ Insufficient data")
+    if use_year_based_splits:
+        # Year-based walk-forward
+        if test_years is None:
+            test_years = [2022, 2023, 2024, 2025]
+
+        print(f"\nConfiguration (Year-Based):")
+        print(f"  Symbol: {symbol} {timeframe}")
+        print(f"  Test years: {test_years}")
+        print(f"  Training: 2 years before each test year")
+        print(f"  Lookback bars: {lookback_bars}")
+        print("=" * 70)
+
+        # Fetch all available data (we'll filter by year)
+        # Fetch enough bars to cover all years (approximate)
+        years_needed = max(test_years) - min(test_years) + 3  # +3 for 2 training years before first test
+        if timeframe == "H1":
+            bars_per_year = 365 * 24  # Approximate
+        elif timeframe == "H4":
+            bars_per_year = 365 * 6
+        elif timeframe == "D1":
+            bars_per_year = 365
+        else:
+            bars_per_year = 365 * 24  # Default to H1 estimate
+
+        total_bars_needed = int(years_needed * bars_per_year * 1.2)  # 20% buffer
+
+        print(f"\nFetching ~{total_bars_needed} bars from MT5 to cover {years_needed} years...")
+        try:
+            df_full = fetch_ohlc(symbol, timeframe, total_bars_needed + lookback_bars)
+            if df_full is None or len(df_full) < lookback_bars:
+                print(f"✗ Insufficient data")
+                return pd.DataFrame()
+        except Exception as e:
+            print(f"✗ Data fetch failed: {e}")
             return pd.DataFrame()
-    except Exception as e:
-        print(f"✗ Data fetch failed: {e}")
-        return pd.DataFrame()
 
-    print(f"✓ Fetched {len(df_full)} bars")
-    print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
+        print(f"✓ Fetched {len(df_full)} bars")
+        print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
 
-    # Calculate split positions
-    segment_size = train_bars + test_bars
-    available_bars = len(df_full) - lookback_bars
-    max_splits = available_bars // segment_size
+        return _run_year_based_walk_forward(
+            df_full=df_full,
+            test_years=test_years,
+            symbol=symbol,
+            timeframe=timeframe,
+            lookback_bars=lookback_bars,
+            param_grid=param_grid,
+            spread_pips=spread_pips,
+            commission_per_side_per_lot=commission_per_side_per_lot,
+            slippage_pips=slippage_pips,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
+            starting_balance_usd=starting_balance_usd,
+            broken_level_break_pips=broken_level_break_pips,
+            n_jobs=n_jobs
+        )
 
-    if splits > max_splits:
-        print(f"\nWARNING: Requested {splits} splits but only {max_splits} possible with current data")
-        splits = max_splits
+    else:
+        # Original bar-based walk-forward
+        print(f"\nConfiguration (Bar-Based):")
+        print(f"  Symbol: {symbol} {timeframe}")
+        print(f"  Total bars: {total_bars} (+ {lookback_bars} lookback)")
+        print(f"  Splits: {splits}")
+        print(f"  Train bars: {train_bars}")
+        print(f"  Test bars: {test_bars}")
+        print(f"  Segment size: {train_bars + test_bars} bars")
+        print("=" * 70)
 
-    print(f"\nRunning {splits} walk-forward splits...")
+        # Fetch data once
+        print(f"\nFetching {total_bars + lookback_bars} bars from MT5...")
+        try:
+            df_full = fetch_ohlc(symbol, timeframe, total_bars + lookback_bars)
+            if df_full is None or len(df_full) < lookback_bars + train_bars + test_bars:
+                print(f"✗ Insufficient data")
+                return pd.DataFrame()
+        except Exception as e:
+            print(f"✗ Data fetch failed: {e}")
+            return pd.DataFrame()
+
+        print(f"✓ Fetched {len(df_full)} bars")
+        print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
+
+        # Calculate split positions
+        segment_size = train_bars + test_bars
+        available_bars = len(df_full) - lookback_bars
+        max_splits = available_bars // segment_size
+
+        if splits > max_splits:
+            print(f"\nWARNING: Requested {splits} splits but only {max_splits} possible with current data")
+            splits = max_splits
+
+        print(f"\nRunning {splits} walk-forward splits...")
 
     split_results = []
     all_train_results = []  # Store full training grid results for each split
@@ -2308,8 +2631,8 @@ if __name__ == "__main__":
             print("No results to display - all backtests failed")
 
     elif MODE == "walk-forward":
-        # Run walk-forward analysis
-        print("\n>>> Running Walk-Forward Analysis\n")
+        # Run walk-forward analysis (YEAR-BASED)
+        print("\n>>> Running Year-Based Walk-Forward Analysis\n")
 
         param_grid = {
             'min_confidence': [0.60, 0.65, 0.70],
@@ -2320,28 +2643,28 @@ if __name__ == "__main__":
         wf_results = run_walk_forward(
             symbol="EURUSD",
             timeframe="H1",
-            total_bars=2000,
             lookback_bars=400,
-            splits=3,
-            train_bars=400,
-            test_bars=200,
             param_grid=param_grid,
-            spread_pips=1.5,
+            spread_pips=1.0,
             commission_per_side_per_lot=7.0,
             slippage_pips=0.5,
             usd_per_pip_per_lot=10.0,
             starting_balance_usd=10000.0,
-            n_jobs=-1
+            n_jobs=-1,
+            # Year-based walk-forward
+            use_year_based_splits=True,
+            test_years=[2022, 2023, 2024, 2025]  # Train on 2 previous years, test on each
         )
 
         # Display detailed results
         if len(wf_results) > 0:
-            print("\nDetailed Walk-Forward Results:")
+            print("\nDetailed Year-Based Walk-Forward Results:")
             print("=" * 70)
-            display_cols = ['split', 'param_min_confidence', 'param_broken_level_cooldown_hours', 'param_min_edge_pips',
+            display_cols = ['test_year', 'train_years',
+                           'param_min_confidence', 'param_broken_level_cooldown_hours', 'param_min_edge_pips',
                            'train_profit_factor', 'test_profit_factor',
                            'train_total_trades', 'test_total_trades',
-                           'test_total_pnl_after_costs']
+                           'test_total_pnl_after_costs', 'pf_degradation']
             print(wf_results[display_cols].to_string(index=False))
 
     print("\n" + "=" * 70)
