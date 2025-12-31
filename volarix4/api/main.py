@@ -269,7 +269,14 @@ def create_app() -> FastAPI:
                 logger.info("OPTIMIZED MODE: Fetching bars from MT5 using Python")
                 logger.info("=" * 70)
                 logger.info(f"Bar time (Unix): {request.bar_time}")
-                logger.info(f"Lookback bars: {request.lookback_bars}")
+                logger.info(f"Lookback bars requested: {request.lookback_bars}")
+
+                # Ensure we fetch at least 200 bars (required by parity contract)
+                MIN_BARS_REQUIRED = 200
+                actual_lookback = max(request.lookback_bars, MIN_BARS_REQUIRED)
+
+                if actual_lookback > request.lookback_bars:
+                    logger.warning(f"Lookback bars increased from {request.lookback_bars} to {actual_lookback} (minimum required by parity contract)")
 
                 # Import fetch_ohlc
                 from volarix4.core.data import fetch_ohlc
@@ -277,13 +284,14 @@ def create_app() -> FastAPI:
                 # Convert Unix timestamp to datetime
                 bar_datetime = datetime.fromtimestamp(request.bar_time)
                 logger.info(f"Bar datetime: {bar_datetime}")
+                logger.info(f"Fetching {actual_lookback} bars before {bar_datetime}")
 
                 # Fetch bars before bar_time (not including it)
                 try:
                     df_fetched = fetch_ohlc(
                         symbol=request.symbol,
                         timeframe=request.timeframe,
-                        bars=request.lookback_bars,
+                        bars=actual_lookback,
                         end_time=bar_datetime
                     )
                     logger.info(f"Successfully fetched {len(df_fetched)} bars from MT5")
