@@ -695,6 +695,126 @@ def levels_sane(entry: float, sl: float, tp1: float, tp2: float, tp3: float, dir
     else:
         return False
 
+def _run_event_driven_backtest(
+        df: pd.DataFrame,
+        symbol: str,
+        timeframe: str,
+        bars: int,
+        lookback_bars: int,
+        spread_pips: float,
+        commission_per_side_per_lot: float,
+        slippage_pips: float,
+        lot_size: float,
+        usd_per_pip_per_lot: float,
+        starting_balance_usd: float,
+        min_confidence: float,
+        broken_level_cooldown_hours: float,
+        broken_level_break_pips: float,
+        min_edge_pips: float,
+        enable_confidence_filter: bool,
+        enable_broken_level_filter: bool,
+        enable_session_filter: bool,
+        enable_trend_filter: bool,
+        enable_signal_cooldown: bool,
+        signal_cooldown_hours: float,
+        sr_cache: Optional[Dict[int, List]],
+        tick_mode: str,
+        verbose: bool
+) -> Dict:
+    """Run event-driven backtest using tick-based engine
+
+    This is a helper function that sets up the event-driven components
+    (TickGenerator, BacktestBroker, Volarix4EA, BacktestEngine) and runs
+    the backtest.
+
+    Args:
+        (Same as run_backtest)
+
+    Returns:
+        Dict with backtest results (same format as legacy backtest)
+    """
+    # Import event-driven components
+    from backtest_engine import (
+        OpenPriceTickGenerator,
+        BacktestBroker,
+        Volarix4EA,
+        BacktestEngine
+    )
+
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"EVENT-DRIVEN BACKTEST ENGINE")
+        print(f"{'='*70}")
+        print(f"Mode: {tick_mode}")
+        print(f"{'='*70}\n")
+
+    # Calculate pip value
+    pip_value = calculate_pip_value(symbol)
+
+    # Build config dict (used by EA and broker)
+    config = {
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'bars': bars,
+        'lookback_bars': lookback_bars,
+        'pip_value': pip_value,
+        'spread_pips': spread_pips,
+        'commission_per_side_per_lot': commission_per_side_per_lot,
+        'slippage_pips': slippage_pips,
+        'lot_size': lot_size,
+        'usd_per_pip_per_lot': usd_per_pip_per_lot,
+        'starting_balance_usd': starting_balance_usd,
+        'min_confidence': min_confidence,
+        'broken_level_cooldown_hours': broken_level_cooldown_hours,
+        'broken_level_break_pips': broken_level_break_pips,
+        'min_edge_pips': min_edge_pips,
+        'enable_confidence_filter': enable_confidence_filter,
+        'enable_broken_level_filter': enable_broken_level_filter,
+        'enable_session_filter': enable_session_filter,
+        'enable_trend_filter': enable_trend_filter,
+        'enable_signal_cooldown': enable_signal_cooldown,
+        'signal_cooldown_hours': signal_cooldown_hours,
+        'sr_cache': sr_cache,
+        'df': df,
+        'max_positions': 1,  # Single position for now (matches legacy)
+    }
+
+    # 1. Create tick generator
+    if tick_mode == "open_prices":
+        tick_generator = OpenPriceTickGenerator(df=df, pip_value=pip_value)
+    else:
+        raise NotImplementedError(
+            f"Tick mode '{tick_mode}' not yet implemented. "
+            f"Currently only 'open_prices' is supported."
+        )
+
+    # 2. Create broker
+    broker = BacktestBroker(
+        spread_pips=spread_pips,
+        commission_per_side_per_lot=commission_per_side_per_lot,
+        slippage_pips=slippage_pips,
+        lot_size=lot_size,
+        usd_per_pip_per_lot=usd_per_pip_per_lot,
+        pip_value=pip_value
+    )
+
+    # 3. Create EA
+    ea = Volarix4EA(broker=broker, config=config)
+
+    # 4. Create engine
+    engine = BacktestEngine(
+        tick_generator=tick_generator,
+        broker=broker,
+        ea=ea,
+        config=config
+    )
+
+    # 5. Run backtest
+    # Start from lookback_bars (same as legacy)
+    results = engine.run(start_index=lookback_bars, verbose=verbose)
+
+    return results
+
 
 def run_backtest(
         symbol: str = "EURUSD",
@@ -723,6 +843,9 @@ def run_backtest(
         df: Optional[pd.DataFrame] = None,
         sr_cache: Optional[Dict[int, List]] = None,  # OPTIMIZATION: Pre-computed S/R levels
         enforce_bars_limit: bool = True,
+        # Event-driven architecture (NEW)
+        use_event_loop: bool = False,  # Use event-driven backtest engine
+        tick_mode: str = "open_prices",  # Tick generation mode: "open_prices", "ohlc", "1min", "real"
         # Display
         verbose: bool = True
 ) -> Dict:
@@ -753,8 +876,15 @@ def run_backtest(
         broken_level_break_pips: Pips beyond level to mark as broken
         enable_confidence_filter: Enable confidence filtering
         enable_broken_level_filter: Enable broken level filtering
+        enable_session_filter: Enable session filtering (London/NY)
+        enable_trend_filter: Enable trend filtering (EMA 20/50)
+        enable_signal_cooldown: Enable signal cooldown filter
+        signal_cooldown_hours: Hours between signals (if cooldown enabled)
         df: Pre-loaded DataFrame (if None, will fetch from MT5)
+        sr_cache: Pre-computed S/R levels cache (for optimization)
         enforce_bars_limit: If True, only process last (lookback_bars + bars) rows
+        use_event_loop: Use event-driven backtest engine (default: False for legacy mode)
+        tick_mode: Tick generation mode: "open_prices", "ohlc", "1min", "real"
         verbose: Print detailed output
 
     Returns:
@@ -827,6 +957,36 @@ def run_backtest(
                 print(f"  Enforcing bars limit: using last {required_bars} bars")
                 print(f"  Evaluation window: {df['time'].iloc[0]} to {df['time'].iloc[-1]}")
 
+    # Route to event-driven backtest if requested
+    if use_event_loop:
+        return _run_event_driven_backtest(
+            df=df,
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=bars,
+            lookback_bars=lookback_bars,
+            spread_pips=spread_pips,
+            commission_per_side_per_lot=commission_per_side_per_lot,
+            slippage_pips=slippage_pips,
+            lot_size=lot_size,
+            usd_per_pip_per_lot=usd_per_pip_per_lot,
+            starting_balance_usd=starting_balance_usd,
+            min_confidence=min_confidence,
+            broken_level_cooldown_hours=broken_level_cooldown_hours,
+            broken_level_break_pips=broken_level_break_pips,
+            min_edge_pips=min_edge_pips,
+            enable_confidence_filter=enable_confidence_filter,
+            enable_broken_level_filter=enable_broken_level_filter,
+            enable_session_filter=enable_session_filter,
+            enable_trend_filter=enable_trend_filter,
+            enable_signal_cooldown=enable_signal_cooldown,
+            signal_cooldown_hours=signal_cooldown_hours,
+            sr_cache=sr_cache,
+            tick_mode=tick_mode,
+            verbose=verbose
+        )
+
+    # Legacy bar-based backtest (use_event_loop=False)
     # Backtest variables
     trades: List[Trade] = []
     open_trade: Optional[Trade] = None
@@ -915,11 +1075,7 @@ def run_backtest(
                 sr_lookback = min(200, lookback_bars)
 
                 # Periodic detailed logging for first few bars
-                if verbose and bar_idx < 10:
-                    import sys
-                    sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting S/R detection on {sr_lookback} bars...\n")
-                    sys.stderr.flush()
-                    sr_start = time.time()
+
 
                 levels = detect_sr_levels(
                     historical_data.tail(sr_lookback),
@@ -927,11 +1083,7 @@ def run_backtest(
                     pip_value=pip_value
                 )
 
-                if verbose and bar_idx < 10:
-                    sr_time = time.time() - sr_start
-                    import sys
-                    sys.stderr.write(f"[DETAIL] Bar {bar_idx}: S/R detection took {sr_time:.3f}s, found {len(levels)} levels\n")
-                    sys.stderr.flush()
+
 
             if not levels:
                 filter_rejections["no_sr_levels"] += 1
@@ -987,11 +1139,7 @@ def run_backtest(
             # FILTER 5: Rejection Search
             # Match API: volarix4/api/main.py:467-556
 
-            if verbose and bar_idx < 10:
-                import sys
-                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting rejection search...\n")
-                sys.stderr.flush()
-                rej_start = time.time()
+
 
             rejection = find_rejection_candle(
                 historical_data.tail(20),
@@ -1000,11 +1148,7 @@ def run_backtest(
                 pip_value=pip_value
             )
 
-            if verbose and bar_idx < 10:
-                rej_time = time.time() - rej_start
-                import sys
-                sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Rejection search took {rej_time:.3f}s\n")
-                sys.stderr.flush()
+
 
             if not rejection:
                 signals_generated["HOLD"] += 1
