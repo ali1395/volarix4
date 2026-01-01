@@ -12,7 +12,7 @@ NOTE: Final backtesting should be done using MT5 Expert Advisor.
 
 import sys
 import os
-
+verbose_output=False
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -866,7 +866,7 @@ def run_backtest(
 
         # Progress logging for workers (not verbose mode)
         bar_idx = i - lookback_bars
-        if not verbose and bar_idx > 0 and bar_idx % progress_interval == 0:
+        if verbose and bar_idx > 0 and bar_idx % progress_interval == 0:
             elapsed = time.time() - last_progress_time
             pct = (bar_idx / total_bars) * 100
             bars_per_sec = progress_interval / elapsed if elapsed > 0 else 0
@@ -915,7 +915,7 @@ def run_backtest(
                 sr_lookback = min(200, lookback_bars)
 
                 # Periodic detailed logging for first few bars
-                if not verbose and bar_idx < 10:
+                if verbose and bar_idx < 10:
                     import sys
                     sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting S/R detection on {sr_lookback} bars...\n")
                     sys.stderr.flush()
@@ -927,7 +927,7 @@ def run_backtest(
                     pip_value=pip_value
                 )
 
-                if not verbose and bar_idx < 10:
+                if verbose and bar_idx < 10:
                     sr_time = time.time() - sr_start
                     import sys
                     sys.stderr.write(f"[DETAIL] Bar {bar_idx}: S/R detection took {sr_time:.3f}s, found {len(levels)} levels\n")
@@ -987,7 +987,7 @@ def run_backtest(
             # FILTER 5: Rejection Search
             # Match API: volarix4/api/main.py:467-556
 
-            if not verbose and bar_idx < 10:
+            if verbose and bar_idx < 10:
                 import sys
                 sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Starting rejection search...\n")
                 sys.stderr.flush()
@@ -1000,7 +1000,7 @@ def run_backtest(
                 pip_value=pip_value
             )
 
-            if not verbose and bar_idx < 10:
+            if verbose and bar_idx < 10:
                 rej_time = time.time() - rej_start
                 import sys
                 sys.stderr.write(f"[DETAIL] Bar {bar_idx}: Rejection search took {rej_time:.3f}s\n")
@@ -1445,7 +1445,7 @@ def _run_single_backtest(args):
             df=df_slice,
             sr_cache=sr_cache,  # Pass pre-computed S/R levels
             enforce_bars_limit=True,
-            verbose=False,
+            verbose=verbose_output,
             **backtest_kwargs
         )
 
@@ -1853,7 +1853,7 @@ def _run_year_based_walk_forward(
         test_pip_value = calculate_pip_value(symbol)
         test_sr_lookback = min(200, lookback_bars)
         test_sr_cache = precompute_sr_levels(test_df, test_sr_lookback, test_pip_value,
-                                            min_score=60.0, compute_interval=24, verbose=False)
+                                            min_score=60.0, compute_interval=24, verbose=verbose_output)
         if verbose:
             print(f"[OPTIMIZATION] ✓ Test S/R cache ready ({len(test_sr_cache)} entries)")
 
@@ -2273,7 +2273,7 @@ def run_walk_forward(
             enable_broken_level_filter='broken_level_cooldown_hours' in test_param_dict,
             df=test_df,
             enforce_bars_limit=True,
-            verbose=False
+            verbose=verbose_output
         )
 
         if 'profit_factor' not in test_result:
@@ -2412,7 +2412,7 @@ def run_walk_forward(
                 enable_broken_level_filter='broken_level_cooldown_hours' in combo_params,
                 df=test_df,
                 enforce_bars_limit=True,
-                verbose=False
+                verbose=verbose_output
             )
 
             # Store result with params
@@ -2919,7 +2919,7 @@ if __name__ == "__main__":
             min_confidence=0.65,
             broken_level_cooldown_hours=24.0,
             broken_level_break_pips=15.0,
-            verbose=True
+            verbose=verbose_output
         )
 
     elif MODE == "grid-search":
