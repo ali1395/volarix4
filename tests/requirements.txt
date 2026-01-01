@@ -1,0 +1,7 @@
+# Test dependencies for Volarix 4
+# Install with: pip install -r tests/requirements.txt
+
+pytest>=7.0.0
+pandas>=1.5.0
+numpy>=1.23.0
+MetaTrader5>=5.0.0
