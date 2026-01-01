@@ -719,6 +719,8 @@ def _run_event_driven_backtest(
         signal_cooldown_hours: float,
         sr_cache: Optional[Dict[int, List]],
         tick_mode: str,
+        exit_semantics: str,
+        tp_model: str,
         verbose: bool
 ) -> Dict:
     """Run event-driven backtest using tick-based engine
@@ -738,14 +740,18 @@ def _run_event_driven_backtest(
         OpenPriceTickGenerator,
         BacktestBroker,
         Volarix4EA,
-        BacktestEngine
+        BacktestEngine,
+        ExitSemantics,
+        TPModel
     )
 
     if verbose:
         print(f"\n{'='*70}")
         print(f"EVENT-DRIVEN BACKTEST ENGINE")
         print(f"{'='*70}")
-        print(f"Mode: {tick_mode}")
+        print(f"Tick mode: {tick_mode}")
+        print(f"Exit semantics: {exit_semantics}")
+        print(f"TP model: {tp_model}")
         print(f"{'='*70}\n")
 
     # Calculate pip value
@@ -779,6 +785,10 @@ def _run_event_driven_backtest(
         'max_positions': 1,  # Single position for now (matches legacy)
     }
 
+    # Convert string parameters to enum values
+    exit_semantics_enum = ExitSemantics(exit_semantics)
+    tp_model_enum = TPModel(tp_model)
+
     # 1. Create tick generator
     if tick_mode == "open_prices":
         tick_generator = OpenPriceTickGenerator(df=df, pip_value=pip_value)
@@ -795,7 +805,9 @@ def _run_event_driven_backtest(
         slippage_pips=slippage_pips,
         lot_size=lot_size,
         usd_per_pip_per_lot=usd_per_pip_per_lot,
-        pip_value=pip_value
+        pip_value=pip_value,
+        exit_semantics=exit_semantics_enum,
+        tp_model=tp_model_enum
     )
 
     # 3. Create EA
@@ -846,6 +858,8 @@ def run_backtest(
         # Event-driven architecture (NEW)
         use_event_loop: bool = False,  # Use event-driven backtest engine
         tick_mode: str = "open_prices",  # Tick generation mode: "open_prices", "ohlc", "1min", "real"
+        exit_semantics: str = "ohlc_intrabar",  # Exit semantics: "open_only" or "ohlc_intrabar"
+        tp_model: str = "full_close_first_tp",  # TP model: "full_close_first_tp" or "partial_tps"
         # Display
         verbose: bool = True
 ) -> Dict:
@@ -983,6 +997,8 @@ def run_backtest(
             signal_cooldown_hours=signal_cooldown_hours,
             sr_cache=sr_cache,
             tick_mode=tick_mode,
+            exit_semantics=exit_semantics,
+            tp_model=tp_model,
             verbose=verbose
         )
 
