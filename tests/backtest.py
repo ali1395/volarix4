@@ -1476,7 +1476,8 @@ def run_grid_search(
         usd_per_pip_per_lot: float = 10.0,
         starting_balance_usd: float = 10000.0,
         df: Optional[pd.DataFrame] = None,
-        n_jobs: int = -1
+        n_jobs: int = -1,
+        verbose: bool = False
 ) -> pd.DataFrame:
     """
     Run grid search over parameter combinations using parallel processing.
@@ -1494,12 +1495,13 @@ def run_grid_search(
     """
     import multiprocessing
 
-    print("\n" + "=" * 70)
-    print("GRID SEARCH - Parameter Optimization (Multi-Core)")
-    print("=" * 70)
-    print(f"\nTesting parameter combinations:")
-    for param, values in param_grid.items():
-        print(f"  {param}: {values}")
+    if verbose:
+        print("\n" + "=" * 70)
+        print("GRID SEARCH - Parameter Optimization (Multi-Core)")
+        print("=" * 70)
+        print(f"\nTesting parameter combinations:")
+        for param, values in param_grid.items():
+            print(f"  {param}: {values}")
 
     # Generate all combinations
     param_names = list(param_grid.keys())
@@ -1516,26 +1518,30 @@ def run_grid_search(
     else:
         n_workers = min(n_jobs, total_combinations)
 
-    print(f"\nTotal combinations: {total_combinations}")
-    print(f"CPU cores available: {multiprocessing.cpu_count()}")
-    print(f"Using {n_workers} parallel workers")
-    print(f"[TIMER] Starting grid search at {time.strftime('%H:%M:%S')}")
+    if verbose:
+        print(f"\nTotal combinations: {total_combinations}")
+        print(f"CPU cores available: {multiprocessing.cpu_count()}")
+        print(f"Using {n_workers} parallel workers")
+        print(f"[TIMER] Starting grid search at {time.strftime('%H:%M:%S')}")
 
     grid_start_time = time.time()
 
     # OPTIMIZATION: Pre-compute S/R levels once for all backtests
-    print(f"\n[OPTIMIZATION] Pre-computing S/R levels for {len(df)} bars...")
-    print(f"  This takes ~1-2 minutes but will save hours across {total_combinations} backtests!\n")
+    if verbose:
+        print(f"\n[OPTIMIZATION] Pre-computing S/R levels for {len(df)} bars...")
+        print(f"  This takes ~1-2 minutes but will save hours across {total_combinations} backtests!\n")
 
     pip_value = calculate_pip_value(symbol)
     # Use reduced lookback for S/R (200 instead of 400) - 2x faster, still effective
     sr_lookback = min(200, lookback_bars)  # Use 200 bars for S/R detection (faster)
-    print(f"[OPTIMIZATION] Using {sr_lookback} bars for S/R detection (reduced from {lookback_bars} for speed)")
+    if verbose:
+        print(f"[OPTIMIZATION] Using {sr_lookback} bars for S/R detection (reduced from {lookback_bars} for speed)")
     # Compute every 24 bars (1 day on H1) - 24x fewer computations!
     sr_cache = precompute_sr_levels(df, sr_lookback, pip_value, min_score=60.0,
-                                    compute_interval=24, verbose=True)
+                                    compute_interval=24, verbose=verbose)
 
-    print("\nRunning backtests with pre-computed S/R levels...\n")
+    if verbose:
+        print("\nRunning backtests with pre-computed S/R levels...\n")
 
     # Prepare backtest kwargs (common to all backtests)
     backtest_kwargs = {
@@ -1603,8 +1609,9 @@ def run_grid_search(
                     for args in worker_args
                 }
 
-                print(f"[INFO] Submitted {len(future_to_params)} jobs to worker pool")
-                print(f"[INFO] Each backtest processes ~{bars} bars, this may take several minutes per job\n")
+                if verbose:
+                    print(f"[INFO] Submitted {len(future_to_params)} jobs to worker pool")
+                    print(f"[INFO] Each backtest processes ~{bars} bars, this may take several minutes per job\n")
 
                 # Process results as they complete
                 for future in as_completed(future_to_params):
@@ -1626,14 +1633,17 @@ def run_grid_search(
 
                         if 'profit_factor' in result:
                             results_list.append(result)
-                            print(f"[{completed}/{total_combinations}] ✓ {params} → PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}{eta_str}")
+                            if verbose:
+                                print(f"[{completed}/{total_combinations}] ✓ {params} → PF: {result['profit_factor']:.2f}, Trades: {result['total_trades']}{eta_str}")
                         else:
                             failed += 1
-                            print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}{eta_str}")
+                            if verbose:
+                                print(f"[{completed}/{total_combinations}] ✗ Failed: {params} - {result.get('error', 'Unknown error')}{eta_str}")
 
                     except Exception as e:
                         failed += 1
-                        print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}{eta_str}")
+                        if verbose:
+                            print(f"[{completed}/{total_combinations}] ✗ Exception: {params} - {str(e)}{eta_str}")
 
         finally:
             # Stop heartbeat thread
@@ -1652,18 +1662,19 @@ def run_grid_search(
     grid_total_time = time.time() - grid_start_time
     avg_time_per_backtest = grid_total_time / total_combinations if total_combinations > 0 else 0
 
-    print("\n" + "=" * 70)
-    print("GRID SEARCH COMPLETE")
-    print("=" * 70)
-    print(f"[TIMER] Grid search completed in {format_duration(grid_total_time)}")
-    print(f"  • Average time per backtest: {format_duration(avg_time_per_backtest)}")
-    print(f"  • Throughput: {total_combinations / (grid_total_time / 60):.1f} backtests/minute")
-    print(f"\nSummary:")
-    print(f"  Total tests: {total_combinations}")
-    print(f"  Successful: {len(results_list)}")
-    print(f"  Failed: {failed}")
-    print(f"  Success rate: {(len(results_list)/total_combinations*100):.1f}%")
-    print("=" * 70)
+    if verbose:
+        print("\n" + "=" * 70)
+        print("GRID SEARCH COMPLETE")
+        print("=" * 70)
+        print(f"[TIMER] Grid search completed in {format_duration(grid_total_time)}")
+        print(f"  • Average time per backtest: {format_duration(avg_time_per_backtest)}")
+        print(f"  • Throughput: {total_combinations / (grid_total_time / 60):.1f} backtests/minute")
+        print(f"\nSummary:")
+        print(f"  Total tests: {total_combinations}")
+        print(f"  Successful: {len(results_list)}")
+        print(f"  Failed: {failed}")
+        print(f"  Success rate: {(len(results_list)/total_combinations*100):.1f}%")
+        print("=" * 70)
 
     return df_results
 
@@ -1681,7 +1692,8 @@ def _run_year_based_walk_forward(
         usd_per_pip_per_lot: float,
         starting_balance_usd: float,
         broken_level_break_pips: float,
-        n_jobs: int
+        n_jobs: int,
+        verbose: bool = False
 ) -> pd.DataFrame:
     """
     Run year-based walk-forward: train on 2 previous years, test on each target year.
@@ -1702,10 +1714,11 @@ def _run_year_based_walk_forward(
     for split_idx, test_year in enumerate(test_years):
         split_start = time.time()
 
-        print("\n" + "-" * 70)
-        print(f"YEAR {test_year} (Split {split_idx + 1}/{len(test_years)})")
-        print("-" * 70)
-        print(f"[TIMER] Starting year {test_year} at {time.strftime('%H:%M:%S')}")
+        if verbose:
+            print("\n" + "-" * 70)
+            print(f"YEAR {test_year} (Split {split_idx + 1}/{len(test_years)})")
+            print("-" * 70)
+            print(f"[TIMER] Starting year {test_year} at {time.strftime('%H:%M:%S')}")
 
         # Define train and test periods
         # TODO: For faster testing, use 1 year instead of 2. Change back to -2 for full test.
@@ -1715,30 +1728,34 @@ def _run_year_based_walk_forward(
 
         # Filter data by year
         data_prep_start = time.time()
-        print(f"[STEP 1/3] Preparing data...")
+        if verbose:
+            print(f"[STEP 1/3] Preparing data...")
 
         train_start_date = pd.Timestamp(f"{train_start_year}-01-01")
         train_end_date = pd.Timestamp(f"{test_year}-01-01")  # Exclusive
         test_start_date = pd.Timestamp(f"{test_year}-01-01")
         test_end_date = pd.Timestamp(f"{test_year + 1}-01-01")  # Exclusive
 
-        print(f"\nTrain period: {train_start_year}-{train_end_year} (2 years)")
-        print(f"  Date range: {train_start_date.date()} to {train_end_date.date()}")
-        print(f"\nTest period: {test_year} (1 year)")
-        print(f"  Date range: {test_start_date.date()} to {test_end_date.date()}")
+        if verbose:
+            print(f"\nTrain period: {train_start_year}-{train_end_year} (2 years)")
+            print(f"  Date range: {train_start_date.date()} to {train_end_date.date()}")
+            print(f"\nTest period: {test_year} (1 year)")
+            print(f"  Date range: {test_start_date.date()} to {test_end_date.date()}")
 
         # Extract train data
         train_mask = (df_full['time'] >= train_start_date) & (df_full['time'] < train_end_date)
         train_data_only = df_full[train_mask].copy()
 
         if len(train_data_only) == 0:
-            print(f"\n✗ No training data for {train_start_year}-{train_end_year}")
+            if verbose:
+                print(f"\n✗ No training data for {train_start_year}-{train_end_year}")
             continue
 
         # Add lookback bars before training period
         train_lookback_start_idx = df_full[train_mask].index[0] - lookback_bars
         if train_lookback_start_idx < 0:
-            print(f"\n✗ Insufficient lookback bars for training period")
+            if verbose:
+                print(f"\n✗ Insufficient lookback bars for training period")
             continue
 
         train_df = df_full.iloc[train_lookback_start_idx:df_full[train_mask].index[-1] + 1].copy()
@@ -1749,35 +1766,40 @@ def _run_year_based_walk_forward(
         test_data_only = df_full[test_mask].copy()
 
         if len(test_data_only) == 0:
-            print(f"\n✗ No test data for {test_year}")
+            if verbose:
+                print(f"\n✗ No test data for {test_year}")
             continue
 
         # Add lookback bars before test period
         test_lookback_start_idx = df_full[test_mask].index[0] - lookback_bars
         if test_lookback_start_idx < 0:
-            print(f"\n✗ Insufficient lookback bars for test period")
+            if verbose:
+                print(f"\n✗ Insufficient lookback bars for test period")
             continue
 
         test_df = df_full.iloc[test_lookback_start_idx:df_full[test_mask].index[-1] + 1].copy()
         test_bars = len(test_data_only)
 
-        print(f"\nTrain segment:")
-        print(f"  Total bars (with lookback): {len(train_df)}")
-        print(f"  Evaluation bars: {train_bars}")
-        print(f"  Time: {train_df['time'].iloc[lookback_bars]} to {train_df['time'].iloc[-1]}")
+        if verbose:
+            print(f"\nTrain segment:")
+            print(f"  Total bars (with lookback): {len(train_df)}")
+            print(f"  Evaluation bars: {train_bars}")
+            print(f"  Time: {train_df['time'].iloc[lookback_bars]} to {train_df['time'].iloc[-1]}")
 
-        print(f"\nTest segment:")
-        print(f"  Total bars (with lookback): {len(test_df)}")
-        print(f"  Evaluation bars: {test_bars}")
-        print(f"  Time: {test_df['time'].iloc[lookback_bars]} to {test_df['time'].iloc[-1]}")
+            print(f"\nTest segment:")
+            print(f"  Total bars (with lookback): {len(test_df)}")
+            print(f"  Evaluation bars: {test_bars}")
+            print(f"  Time: {test_df['time'].iloc[lookback_bars]} to {test_df['time'].iloc[-1]}")
 
         data_prep_time = time.time() - data_prep_start
-        print(f"[TIMER] Data preparation took {format_duration(data_prep_time)}")
+        if verbose:
+            print(f"[TIMER] Data preparation took {format_duration(data_prep_time)}")
 
         # TRAIN: Run grid search on training years
         grid_search_start = time.time()
-        print(f"\n[STEP 2/3] Running grid search on training data...")
-        print(f"[TRAIN] Grid search on {train_start_year}-{train_end_year} ({train_bars} bars)...")
+        if verbose:
+            print(f"\n[STEP 2/3] Running grid search on training data...")
+            print(f"[TRAIN] Grid search on {train_start_year}-{train_end_year} ({train_bars} bars)...")
 
         train_results = run_grid_search(
             param_grid=param_grid,
@@ -1791,15 +1813,18 @@ def _run_year_based_walk_forward(
             usd_per_pip_per_lot=usd_per_pip_per_lot,
             starting_balance_usd=starting_balance_usd,
             df=train_df,
-            n_jobs=n_jobs
+            n_jobs=n_jobs,
+            verbose=verbose
         )
 
         if len(train_results) == 0:
-            print(f"\n✗ No successful backtests in training - skipping year {test_year}")
+            if verbose:
+                print(f"\n✗ No successful backtests in training - skipping year {test_year}")
             continue
 
         grid_search_time = time.time() - grid_search_start
-        print(f"[TIMER] Grid search took {format_duration(grid_search_time)}")
+        if verbose:
+            print(f"[TIMER] Grid search took {format_duration(grid_search_time)}")
 
         # Select best parameters (by profit_factor, then total_pnl_after_costs)
         train_results_sorted = train_results.sort_values(
@@ -1808,18 +1833,29 @@ def _run_year_based_walk_forward(
         )
         best_params = train_results_sorted.iloc[0]
 
-        print(f"\n[TRAIN] Best parameters found:")
-        print(f"  min_confidence: {best_params['min_confidence']}")
-        print(f"  broken_level_cooldown_hours: {best_params['broken_level_cooldown_hours']}")
-        print(f"  min_edge_pips: {best_params['min_edge_pips']}")
-        print(f"  Train Profit Factor: {best_params['profit_factor']:.2f}")
-        print(f"  Train Total Trades: {best_params['total_trades']:.0f}")
-        print(f"  Train PnL: {best_params['total_pnl_after_costs']:.2f} pips")
+        if verbose:
+            print(f"\n[TRAIN] Best parameters found:")
+            print(f"  min_confidence: {best_params['min_confidence']}")
+            print(f"  broken_level_cooldown_hours: {best_params['broken_level_cooldown_hours']}")
+            print(f"  min_edge_pips: {best_params['min_edge_pips']}")
+            print(f"  Train Profit Factor: {best_params['profit_factor']:.2f}")
+            print(f"  Train Total Trades: {best_params['total_trades']:.0f}")
+            print(f"  Train PnL: {best_params['total_pnl_after_costs']:.2f} pips")
 
         # TEST: Run backtest on test year with best params
         test_start = time.time()
-        print(f"\n[STEP 3/3] Running test on {test_year}...")
-        print(f"[TEST] Testing on {test_year} ({test_bars} bars) with best params...")
+        if verbose:
+            print(f"\n[STEP 3/3] Running test on {test_year}...")
+            print(f"[TEST] Testing on {test_year} ({test_bars} bars) with best params...")
+
+            # Pre-compute S/R levels for test data (same optimization as training)
+            print(f"[OPTIMIZATION] Pre-computing S/R levels for test year {test_year}...")
+        test_pip_value = calculate_pip_value(symbol)
+        test_sr_lookback = min(200, lookback_bars)
+        test_sr_cache = precompute_sr_levels(test_df, test_sr_lookback, test_pip_value,
+                                            min_score=60.0, compute_interval=24, verbose=False)
+        if verbose:
+            print(f"[OPTIMIZATION] ✓ Test S/R cache ready ({len(test_sr_cache)} entries)")
 
         test_result = run_backtest(
             min_confidence=best_params['min_confidence'],
@@ -1835,36 +1871,42 @@ def _run_year_based_walk_forward(
             usd_per_pip_per_lot=usd_per_pip_per_lot,
             starting_balance_usd=starting_balance_usd,
             broken_level_break_pips=broken_level_break_pips,
-            df=test_df
+            df=test_df,
+            sr_cache=test_sr_cache  # Use pre-computed S/R for test too!
         )
 
         if test_result is None or test_result['total_trades'] == 0:
-            print(f"\n✗ Test backtest failed or no trades - skipping year {test_year}")
+            if verbose:
+                print(f"\n✗ Test backtest failed or no trades - skipping year {test_year}")
             continue
 
         test_time = time.time() - test_start
-        print(f"[TIMER] Test run took {format_duration(test_time)}")
+        if verbose:
+            print(f"[TIMER] Test run took {format_duration(test_time)}")
 
         test_trades = test_result.get('trades', [])
 
-        print(f"\n[TEST] Year {test_year} Results:")
-        print(f"  Profit Factor: {test_result['profit_factor']:.2f}")
-        print(f"  Total Trades: {test_result['total_trades']:.0f}")
-        print(f"  Win Rate: {test_result['win_rate']:.1f}%")
-        print(f"  PnL: {test_result['total_pnl_after_costs']:.2f} pips")
-        print(f"  Max Drawdown: {test_result['max_drawdown']:.2f} pips ({test_result['max_drawdown_pct']:.2f}%)")
+        if verbose:
+            print(f"\n[TEST] Year {test_year} Results:")
+            print(f"  Profit Factor: {test_result['profit_factor']:.2f}")
+            print(f"  Total Trades: {test_result['total_trades']:.0f}")
+            print(f"  Win Rate: {test_result['win_rate']:.1f}%")
+            print(f"  PnL: {test_result['total_pnl_after_costs']:.2f} pips")
+            print(f"  Max Drawdown: {test_result['max_drawdown']:.2f} pips ({test_result['max_drawdown_pct']:.2f}%)")
 
         # Calculate performance degradation
         pf_degradation = test_result['profit_factor'] / best_params['profit_factor'] if best_params['profit_factor'] > 0 else 0
 
-        print(f"\nPerformance Degradation:")
-        print(f"  PF Ratio (test/train): {pf_degradation:.2f}")
+        if verbose:
+            print(f"\nPerformance Degradation:")
+            print(f"  PF Ratio (test/train): {pf_degradation:.2f}")
 
         split_time = time.time() - split_start
-        print(f"\n[TIMER] Year {test_year} completed in {format_duration(split_time)}")
-        print(f"  • Data prep: {format_duration(data_prep_time)}")
-        print(f"  • Grid search: {format_duration(grid_search_time)}")
-        print(f"  • Test run: {format_duration(test_time)}")
+        if verbose:
+            print(f"\n[TIMER] Year {test_year} completed in {format_duration(split_time)}")
+            print(f"  • Data prep: {format_duration(data_prep_time)}")
+            print(f"  • Grid search: {format_duration(grid_search_time)}")
+            print(f"  • Test run: {format_duration(test_time)}")
 
         # Store split results
         split_result = {
@@ -1898,8 +1940,8 @@ def _run_year_based_walk_forward(
 
             # Degradation metrics
             'pf_degradation': pf_degradation,
-            'expected_payoff_degradation': (test_result['expected_payoff'] / best_params['expected_payoff'])
-                                          if best_params['expected_payoff'] > 0 else 0
+            'expected_payoff_degradation': (test_result.get('expected_payoff_pips', 0) / best_params.get('expected_payoff_pips', 1))
+                                          if best_params.get('expected_payoff_pips', 0) > 0 else 0
         }
 
         split_results.append(split_result)
@@ -1918,43 +1960,45 @@ def _run_year_based_walk_forward(
     df_results = pd.DataFrame(split_results)
 
     if len(df_results) == 0:
-        print("\n✗ No successful year-based splits")
+        if verbose:
+            print("\n✗ No successful year-based splits")
         return df_results
 
     overall_time = time.time() - overall_start
 
-    # Print summary statistics
-    print("\n" + "=" * 70)
-    print("YEAR-BASED WALK-FORWARD SUMMARY")
-    print("=" * 70)
-    print(f"[TIMER] Total execution time: {format_duration(overall_time)}")
+    if verbose:
+        # Print summary statistics
+        print("\n" + "=" * 70)
+        print("YEAR-BASED WALK-FORWARD SUMMARY")
+        print("=" * 70)
+        print(f"[TIMER] Total execution time: {format_duration(overall_time)}")
 
-    print(f"\nCompleted years: {len(df_results)}/{len(test_years)}")
+        print(f"\nCompleted years: {len(df_results)}/{len(test_years)}")
 
-    # Overall test performance
-    total_test_trades = df_results['test_total_trades'].sum()
-    total_test_pnl = df_results['test_total_pnl_after_costs'].sum()
-    avg_test_pf = df_results['test_profit_factor'].mean()
+        # Overall test performance
+        total_test_trades = df_results['test_total_trades'].sum()
+        total_test_pnl = df_results['test_total_pnl_after_costs'].sum()
+        avg_test_pf = df_results['test_profit_factor'].mean()
 
-    print(f"\nOverall Test Performance:")
-    print(f"{'Total trades across all years':<40} {total_test_trades:.0f}")
-    print(f"{'Total PnL across all years':<40} {total_test_pnl:.2f} pips")
-    print(f"{'Average Profit Factor':<40} {avg_test_pf:.2f}")
+        print(f"\nOverall Test Performance:")
+        print(f"{'Total trades across all years':<40} {total_test_trades:.0f}")
+        print(f"{'Total PnL across all years':<40} {total_test_pnl:.2f} pips")
+        print(f"{'Average Profit Factor':<40} {avg_test_pf:.2f}")
 
-    # Per-year statistics
-    print(f"\n{'Mean Profit Factor (per year)':<40} {df_results['test_profit_factor'].mean():.2f}")
-    print(f"{'Median Profit Factor (per year)':<40} {df_results['test_profit_factor'].median():.2f}")
-    print(f"{'Mean PnL per year':<40} {df_results['test_total_pnl_after_costs'].mean():.2f} pips")
+        # Per-year statistics
+        print(f"\n{'Mean Profit Factor (per year)':<40} {df_results['test_profit_factor'].mean():.2f}")
+        print(f"{'Median Profit Factor (per year)':<40} {df_results['test_profit_factor'].median():.2f}")
+        print(f"{'Mean PnL per year':<40} {df_results['test_total_pnl_after_costs'].mean():.2f} pips")
 
-    # Profitable years
-    profitable_years = (df_results['test_total_pnl_after_costs'] > 0).sum()
-    print(f"\n{'Profitable years':<40} {profitable_years}/{len(df_results)} ({profitable_years/len(df_results)*100:.1f}%)")
+        # Profitable years
+        profitable_years = (df_results['test_total_pnl_after_costs'] > 0).sum()
+        print(f"\n{'Profitable years':<40} {profitable_years}/{len(df_results)} ({profitable_years/len(df_results)*100:.1f}%)")
 
-    # Parameter stability
-    print(f"\nParameter Stability:")
-    print(f"{'Unique min_confidence values':<40} {df_results['param_min_confidence'].nunique()}")
-    print(f"{'Unique cooldown values':<40} {df_results['param_broken_level_cooldown_hours'].nunique()}")
-    print(f"{'Unique min_edge values':<40} {df_results['param_min_edge_pips'].nunique()}")
+        # Parameter stability
+        print(f"\nParameter Stability:")
+        print(f"{'Unique min_confidence values':<40} {df_results['param_min_confidence'].nunique()}")
+        print(f"{'Unique cooldown values':<40} {df_results['param_broken_level_cooldown_hours'].nunique()}")
+        print(f"{'Unique min_edge values':<40} {df_results['param_min_edge_pips'].nunique()}")
 
     return df_results
 
@@ -1976,7 +2020,8 @@ def run_walk_forward(
         broken_level_break_pips: float = 15.0,
         n_jobs: int = -1,
         use_year_based_splits: bool = False,
-        test_years: Optional[List[int]] = None
+        test_years: Optional[List[int]] = None,
+        verbose: bool = False
 ) -> pd.DataFrame:
     """
     Run walk-forward analysis: train on one segment, test on next segment.
@@ -2001,9 +2046,10 @@ def run_walk_forward(
     Returns:
         DataFrame with one row per split containing train/test results
     """
-    print("\n" + "=" * 70)
-    print("WALK-FORWARD ANALYSIS")
-    print("=" * 70)
+    if verbose:
+        print("\n" + "=" * 70)
+        print("WALK-FORWARD ANALYSIS")
+        print("=" * 70)
 
     # Default param grid if not provided
     if param_grid is None:
@@ -2018,12 +2064,13 @@ def run_walk_forward(
         if test_years is None:
             test_years = [2022, 2023, 2024, 2025]
 
-        print(f"\nConfiguration (Year-Based):")
-        print(f"  Symbol: {symbol} {timeframe}")
-        print(f"  Test years: {test_years}")
-        print(f"  Training: 2 years before each test year")
-        print(f"  Lookback bars: {lookback_bars}")
-        print("=" * 70)
+        if verbose:
+            print(f"\nConfiguration (Year-Based):")
+            print(f"  Symbol: {symbol} {timeframe}")
+            print(f"  Test years: {test_years}")
+            print(f"  Training: 2 years before each test year")
+            print(f"  Lookback bars: {lookback_bars}")
+            print("=" * 70)
 
         # Fetch all available data (we'll filter by year)
         # Fetch enough bars to cover all years (approximate)
@@ -2039,18 +2086,22 @@ def run_walk_forward(
 
         total_bars_needed = int(years_needed * bars_per_year * 1.2)  # 20% buffer
 
-        print(f"\nFetching ~{total_bars_needed} bars from MT5 to cover {years_needed} years...")
+        if verbose:
+            print(f"\nFetching ~{total_bars_needed} bars from MT5 to cover {years_needed} years...")
         try:
             df_full = fetch_ohlc(symbol, timeframe, total_bars_needed + lookback_bars)
             if df_full is None or len(df_full) < lookback_bars:
-                print(f"✗ Insufficient data")
+                if verbose:
+                    print(f"✗ Insufficient data")
                 return pd.DataFrame()
         except Exception as e:
-            print(f"✗ Data fetch failed: {e}")
+            if verbose:
+                print(f"✗ Data fetch failed: {e}")
             return pd.DataFrame()
 
-        print(f"✓ Fetched {len(df_full)} bars")
-        print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
+        if verbose:
+            print(f"✓ Fetched {len(df_full)} bars")
+            print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
 
         return _run_year_based_walk_forward(
             df_full=df_full,
@@ -2065,33 +2116,39 @@ def run_walk_forward(
             usd_per_pip_per_lot=usd_per_pip_per_lot,
             starting_balance_usd=starting_balance_usd,
             broken_level_break_pips=broken_level_break_pips,
-            n_jobs=n_jobs
+            n_jobs=n_jobs,
+            verbose=verbose
         )
 
     else:
         # Original bar-based walk-forward
-        print(f"\nConfiguration (Bar-Based):")
-        print(f"  Symbol: {symbol} {timeframe}")
-        print(f"  Total bars: {total_bars} (+ {lookback_bars} lookback)")
-        print(f"  Splits: {splits}")
-        print(f"  Train bars: {train_bars}")
-        print(f"  Test bars: {test_bars}")
-        print(f"  Segment size: {train_bars + test_bars} bars")
-        print("=" * 70)
+        if verbose:
+            print(f"\nConfiguration (Bar-Based):")
+            print(f"  Symbol: {symbol} {timeframe}")
+            print(f"  Total bars: {total_bars} (+ {lookback_bars} lookback)")
+            print(f"  Splits: {splits}")
+            print(f"  Train bars: {train_bars}")
+            print(f"  Test bars: {test_bars}")
+            print(f"  Segment size: {train_bars + test_bars} bars")
+            print("=" * 70)
 
         # Fetch data once
-        print(f"\nFetching {total_bars + lookback_bars} bars from MT5...")
+        if verbose:
+            print(f"\nFetching {total_bars + lookback_bars} bars from MT5...")
         try:
             df_full = fetch_ohlc(symbol, timeframe, total_bars + lookback_bars)
             if df_full is None or len(df_full) < lookback_bars + train_bars + test_bars:
-                print(f"✗ Insufficient data")
+                if verbose:
+                    print(f"✗ Insufficient data")
                 return pd.DataFrame()
         except Exception as e:
-            print(f"✗ Data fetch failed: {e}")
+            if verbose:
+                print(f"✗ Data fetch failed: {e}")
             return pd.DataFrame()
 
-        print(f"✓ Fetched {len(df_full)} bars")
-        print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
+        if verbose:
+            print(f"✓ Fetched {len(df_full)} bars")
+            print(f"  Range: {df_full['time'].iloc[0]} to {df_full['time'].iloc[-1]}")
 
         # Calculate split positions
         segment_size = train_bars + test_bars
@@ -2099,19 +2156,22 @@ def run_walk_forward(
         max_splits = available_bars // segment_size
 
         if splits > max_splits:
-            print(f"\nWARNING: Requested {splits} splits but only {max_splits} possible with current data")
+            if verbose:
+                print(f"\nWARNING: Requested {splits} splits but only {max_splits} possible with current data")
             splits = max_splits
 
-        print(f"\nRunning {splits} walk-forward splits...")
+        if verbose:
+            print(f"\nRunning {splits} walk-forward splits...")
 
     split_results = []
     all_train_results = []  # Store full training grid results for each split
     param_stability_data = []  # Store ALL param combo test results across all splits
 
     for split_idx in range(splits):
-        print("\n" + "-" * 70)
-        print(f"SPLIT {split_idx + 1}/{splits}")
-        print("-" * 70)
+        if verbose:
+            print("\n" + "-" * 70)
+            print(f"SPLIT {split_idx + 1}/{splits}")
+            print("-" * 70)
 
         # Calculate indices for this split
         split_start = lookback_bars + (split_idx * segment_size)
@@ -2125,31 +2185,34 @@ def run_walk_forward(
         test_start_with_lookback = test_start - lookback_bars
 
         if train_start_with_lookback < 0:
-            print(f"\n✗ Skip split {split_idx + 1}: insufficient lookback bars for training")
-            print(f"  Need index {train_start_with_lookback}, but minimum is 0")
+            if verbose:
+                print(f"\n✗ Skip split {split_idx + 1}: insufficient lookback bars for training")
+                print(f"  Need index {train_start_with_lookback}, but minimum is 0")
             continue
 
         if test_start_with_lookback < 0:
-            print(f"\n✗ Skip split {split_idx + 1}: insufficient lookback bars for testing")
-            print(f"  Need index {test_start_with_lookback}, but minimum is 0")
+            if verbose:
+                print(f"\n✗ Skip split {split_idx + 1}: insufficient lookback bars for testing")
+                print(f"  Need index {test_start_with_lookback}, but minimum is 0")
             continue
 
         # Extract segments with lookback bars included
         train_df = df_full.iloc[train_start_with_lookback:train_end].copy()
         test_df = df_full.iloc[test_start_with_lookback:test_end].copy()
 
-        print(f"\nTrain segment:")
-        print(f"  Data range (with lookback): index {train_start_with_lookback} to {train_end}")
-        print(f"  Evaluation bars: {train_bars}")
-        print(f"  Time: {df_full.iloc[train_start]['time']} to {df_full.iloc[train_end-1]['time']}")
+        if verbose:
+            print(f"\nTrain segment:")
+            print(f"  Data range (with lookback): index {train_start_with_lookback} to {train_end}")
+            print(f"  Evaluation bars: {train_bars}")
+            print(f"  Time: {df_full.iloc[train_start]['time']} to {df_full.iloc[train_end-1]['time']}")
 
-        print(f"\nTest segment:")
-        print(f"  Data range (with lookback): index {test_start_with_lookback} to {test_end}")
-        print(f"  Evaluation bars: {test_bars}")
-        print(f"  Time: {df_full.iloc[test_start]['time']} to {df_full.iloc[test_end-1]['time']}")
+            print(f"\nTest segment:")
+            print(f"  Data range (with lookback): index {test_start_with_lookback} to {test_end}")
+            print(f"  Evaluation bars: {test_bars}")
+            print(f"  Time: {df_full.iloc[test_start]['time']} to {df_full.iloc[test_end-1]['time']}")
 
-        # TRAIN: Run grid search on train segment
-        print(f"\n[TRAIN] Running grid search on {train_bars} bars...")
+            # TRAIN: Run grid search on train segment
+            print(f"\n[TRAIN] Running grid search on {train_bars} bars...")
 
         train_results = run_grid_search(
             param_grid=param_grid,
@@ -2167,7 +2230,8 @@ def run_walk_forward(
         )
 
         if len(train_results) == 0:
-            print(f"\n✗ No successful backtests in training - skipping split {split_idx + 1}")
+            if verbose:
+                print(f"\n✗ No successful backtests in training - skipping split {split_idx + 1}")
             continue
 
         # Select best parameters (by profit_factor, then total_pnl_after_costs)
@@ -2177,15 +2241,16 @@ def run_walk_forward(
         ).index[0]
         best_params = train_results.loc[best_idx]
 
-        print(f"\n[TRAIN] Best parameters found:")
-        for key in param_grid.keys():
-            print(f"  {key}: {best_params[key]}")
-        print(f"  Train PF: {best_params['profit_factor']:.2f}")
-        print(f"  Train Trades: {best_params['total_trades']}")
-        print(f"  Train PnL: {best_params['total_pnl_after_costs']:.1f} pips")
+        if verbose:
+            print(f"\n[TRAIN] Best parameters found:")
+            for key in param_grid.keys():
+                print(f"  {key}: {best_params[key]}")
+            print(f"  Train PF: {best_params['profit_factor']:.2f}")
+            print(f"  Train Trades: {best_params['total_trades']}")
+            print(f"  Train PnL: {best_params['total_pnl_after_costs']:.1f} pips")
 
-        # TEST: Run single backtest on test segment with best params
-        print(f"\n[TEST] Testing on {test_bars} bars with best params...")
+            # TEST: Run single backtest on test segment with best params
+            print(f"\n[TEST] Testing on {test_bars} bars with best params...")
 
         # Extract test parameters
         test_param_dict = {key: best_params[key] for key in param_grid.keys()}
@@ -2212,29 +2277,31 @@ def run_walk_forward(
         )
 
         if 'profit_factor' not in test_result:
-            print(f"\n✗ Test backtest failed: {test_result.get('error', 'Unknown error')}")
+            if verbose:
+                print(f"\n✗ Test backtest failed: {test_result.get('error', 'Unknown error')}")
             continue
 
-        # Print compact MT5-style test results block
-        print(f"\n[TEST] Results - MT5 Style Report:")
-        print("  " + "-" * 60)
-        pf_str = f"{test_result['profit_factor']:.2f}" if test_result['profit_factor'] != float('inf') else "Inf"
-        print(f"  {'Trades':<35} {test_result['total_trades']:>10}")
-        print(f"  {'Profit trades (% of total)':<35} {test_result['winning_trades']:>6} ({test_result['profit_trades_pct']:.1f}%)")
-        print(f"  {'  Long (won %)':<35} {test_result['trade_count_long']:>6} ({test_result['win_rate_long']:.1f}%)")
-        print(f"  {'  Short (won %)':<35} {test_result['trade_count_short']:>6} ({test_result['win_rate_short']:.1f}%)")
-        print(f"  {'Gross Profit':<35} {test_result['gross_profit_pips']:>10.2f} pips")
-        print(f"  {'Gross Loss':<35} {test_result['gross_loss_pips']:>10.2f} pips")
-        print(f"  {'Total Net Profit':<35} {test_result['total_pnl_after_costs']:>10.2f} pips")
-        print(f"  {'Profit Factor':<35} {pf_str:>10}")
-        print(f"  {'Expected Payoff':<35} {test_result['expected_payoff_pips']:>10.2f} pips")
-        print(f"  {'Recovery Factor':<35} {test_result['recovery_factor']:>10.2f}")
-        print(f"  {'Max Drawdown':<35} {test_result['max_drawdown']:>10.2f} pips ({test_result['max_drawdown_pct']:.2f}%)")
-        print(f"  {'Largest profit trade':<35} {test_result['largest_win_pips']:>10.2f} pips")
-        print(f"  {'Largest loss trade':<35} {test_result['largest_loss_pips']:>10.2f} pips")
-        print(f"  {'Average profit trade':<35} {test_result['avg_win_pips']:>10.2f} pips")
-        print(f"  {'Average loss trade':<35} {test_result['avg_loss_pips']:>10.2f} pips")
-        print("  " + "-" * 60)
+        if verbose:
+            # Print compact MT5-style test results block
+            print(f"\n[TEST] Results - MT5 Style Report:")
+            print("  " + "-" * 60)
+            pf_str = f"{test_result['profit_factor']:.2f}" if test_result['profit_factor'] != float('inf') else "Inf"
+            print(f"  {'Trades':<35} {test_result['total_trades']:>10}")
+            print(f"  {'Profit trades (% of total)':<35} {test_result['winning_trades']:>6} ({test_result['profit_trades_pct']:.1f}%)")
+            print(f"  {'  Long (won %)':<35} {test_result['trade_count_long']:>6} ({test_result['win_rate_long']:.1f}%)")
+            print(f"  {'  Short (won %)':<35} {test_result['trade_count_short']:>6} ({test_result['win_rate_short']:.1f}%)")
+            print(f"  {'Gross Profit':<35} {test_result['gross_profit_pips']:>10.2f} pips")
+            print(f"  {'Gross Loss':<35} {test_result['gross_loss_pips']:>10.2f} pips")
+            print(f"  {'Total Net Profit':<35} {test_result['total_pnl_after_costs']:>10.2f} pips")
+            print(f"  {'Profit Factor':<35} {pf_str:>10}")
+            print(f"  {'Expected Payoff':<35} {test_result['expected_payoff_pips']:>10.2f} pips")
+            print(f"  {'Recovery Factor':<35} {test_result['recovery_factor']:>10.2f}")
+            print(f"  {'Max Drawdown':<35} {test_result['max_drawdown']:>10.2f} pips ({test_result['max_drawdown_pct']:.2f}%)")
+            print(f"  {'Largest profit trade':<35} {test_result['largest_win_pips']:>10.2f} pips")
+            print(f"  {'Largest loss trade':<35} {test_result['largest_loss_pips']:>10.2f} pips")
+            print(f"  {'Average profit trade':<35} {test_result['avg_win_pips']:>10.2f} pips")
+            print(f"  {'Average loss trade':<35} {test_result['avg_loss_pips']:>10.2f} pips")
+            print("  " + "-" * 60)
 
         # Calculate and display degradation metrics
         train_pf = best_params['profit_factor']
@@ -2245,27 +2312,29 @@ def run_walk_forward(
         test_ep = test_result['expected_payoff_pips']
         ep_degradation = test_ep / max(train_ep, 1e-9) if train_ep > 0 else (0.0 if test_ep <= 0 else float('inf'))
 
-        print(f"\n[DEGRADATION] Train → Test Performance:")
-        print("  " + "-" * 60)
-        train_pf_str = f"{train_pf:.2f}" if train_pf != float('inf') else "Inf"
-        test_pf_str = f"{test_pf:.2f}" if test_pf != float('inf') else "Inf"
-        print(f"  {'Profit Factor':<35} {train_pf_str} → {test_pf_str} ({pf_degradation:.2f}x)")
-        print(f"  {'Expected Payoff':<35} {train_ep:.2f} → {test_ep:.2f} ({ep_degradation:.2f}x)")
+        if verbose:
+            print(f"\n[DEGRADATION] Train → Test Performance:")
+            print("  " + "-" * 60)
+            train_pf_str = f"{train_pf:.2f}" if train_pf != float('inf') else "Inf"
+            test_pf_str = f"{test_pf:.2f}" if test_pf != float('inf') else "Inf"
+            print(f"  {'Profit Factor':<35} {train_pf_str} → {test_pf_str} ({pf_degradation:.2f}x)")
+            print(f"  {'Expected Payoff':<35} {train_ep:.2f} → {test_ep:.2f} ({ep_degradation:.2f}x)")
 
-        # Interpretation
-        if pf_degradation >= 0.8:
-            print(f"  {'Status':<35} ✓ Good (minimal degradation)")
-        elif pf_degradation >= 0.6:
-            print(f"  {'Status':<35} ⚠ Moderate degradation")
-        else:
-            print(f"  {'Status':<35} ✗ High degradation (possible overfitting)")
-        print("  " + "-" * 60)
+            # Interpretation
+            if pf_degradation >= 0.8:
+                print(f"  {'Status':<35} ✓ Good (minimal degradation)")
+            elif pf_degradation >= 0.6:
+                print(f"  {'Status':<35} ⚠ Moderate degradation")
+            else:
+                print(f"  {'Status':<35} ✗ High degradation (possible overfitting)")
+            print("  " + "-" * 60)
 
         # Monte Carlo trade order reshuffle stress test
-        print(f"\n[MONTE CARLO] Trade Order Reshuffle (N=1000 simulations):")
-        print("  " + "-" * 60)
-
         test_trades = test_result.get('trades', [])
+        if verbose:
+            print(f"\n[MONTE CARLO] Trade Order Reshuffle (N=1000 simulations):")
+            print("  " + "-" * 60)
+
         if len(test_trades) > 0:
             # Extract PnL values in chronological order
             pnl_list = [trade.pnl_after_costs for trade in test_trades]
@@ -2274,26 +2343,26 @@ def run_walk_forward(
             # Run Monte Carlo simulation
             mc_results = monte_carlo_reshuffle(pnl_list, observed_dd, n_simulations=1000)
 
-            print(f"  {'Observed Max DD':<35} {observed_dd:.2f} pips")
-            print(f"  {'MC Median Max DD':<35} {mc_results['mc_median_max_dd']:.2f} pips")
-            print(f"  {'MC 95th Percentile DD':<35} {mc_results['mc_95th_percentile_dd']:.2f} pips")
-            print(f"  {'MC Maximum DD':<35} {mc_results['mc_max_max_dd']:.2f} pips")
-            print(f"  {'P(final PnL < 0)':<35} {mc_results['mc_prob_loss']*100:.1f}%")
-            print(f"  {'P(DD > observed)':<35} {mc_results['mc_prob_dd_exceeds_observed']*100:.1f}%")
+            if verbose:
+                print(f"  {'Observed Max DD':<35} {observed_dd:.2f} pips")
+                print(f"  {'MC Median Max DD':<35} {mc_results['mc_median_max_dd']:.2f} pips")
+                print(f"  {'MC 95th Percentile DD':<35} {mc_results['mc_95th_percentile_dd']:.2f} pips")
+                print(f"  {'MC Maximum DD':<35} {mc_results['mc_max_max_dd']:.2f} pips")
+                print(f"  {'P(final PnL < 0)':<35} {mc_results['mc_prob_loss']*100:.1f}%")
+                print(f"  {'P(DD > observed)':<35} {mc_results['mc_prob_dd_exceeds_observed']*100:.1f}%")
 
-            # Interpretation
-            dd_ratio = observed_dd / mc_results['mc_median_max_dd'] if mc_results['mc_median_max_dd'] > 0 else 1.0
-            if dd_ratio < 0.8:
-                print(f"  {'Interpretation':<35} ✓ Lucky sequence (obs < median)")
-            elif dd_ratio > 1.2:
-                print(f"  {'Interpretation':<35} ⚠ Unlucky sequence (obs > median)")
-            else:
-                print(f"  {'Interpretation':<35} ~ Typical sequence")
+                # Interpretation
+                dd_ratio = observed_dd / mc_results['mc_median_max_dd'] if mc_results['mc_median_max_dd'] > 0 else 1.0
+                if dd_ratio < 0.8:
+                    print(f"  {'Interpretation':<35} ✓ Lucky sequence (obs < median)")
+                elif dd_ratio > 1.2:
+                    print(f"  {'Interpretation':<35} ⚠ Unlucky sequence (obs > median)")
+                else:
+                    print(f"  {'Interpretation':<35} ~ Typical sequence")
 
-            if mc_results['mc_prob_loss'] > 0.3:
-                print(f"  {'Risk Warning':<35} ⚠ High loss probability ({mc_results['mc_prob_loss']*100:.1f}%)")
+                if mc_results['mc_prob_loss'] > 0.3:
+                    print(f"  {'Risk Warning':<35} ⚠ High loss probability ({mc_results['mc_prob_loss']*100:.1f}%)")
         else:
-            print(f"  {'Status':<35} No trades to analyze")
             mc_results = {
                 'mc_median_max_dd': 0.0,
                 'mc_max_max_dd': 0.0,
@@ -2301,19 +2370,22 @@ def run_walk_forward(
                 'mc_prob_loss': 0.0,
                 'mc_prob_dd_exceeds_observed': 0.0
             }
+            if verbose:
+                print(f"  {'Status':<35} No trades to analyze")
 
-        print("  " + "-" * 60)
+        if verbose:
+            print("  " + "-" * 60)
 
-        # ================================================================
-        # BUCKET DIAGNOSTICS (Per-Trade Analysis)
-        # ================================================================
-        if len(test_trades) > 0:
-            print_bucket_diagnostics(test_trades, bucket_name=f"SPLIT {split_idx + 1} TEST")
+            # ================================================================
+            # BUCKET DIAGNOSTICS (Per-Trade Analysis)
+            # ================================================================
+            if len(test_trades) > 0:
+                print_bucket_diagnostics(test_trades, bucket_name=f"SPLIT {split_idx + 1} TEST")
 
-        # ================================================================
-        # TEST ALL PARAMETER COMBINATIONS (for parameter stability analysis)
-        # ================================================================
-        print(f"\n[STABILITY] Testing all {len(train_results)} parameter combinations on test set...")
+            # ================================================================
+            # TEST ALL PARAMETER COMBINATIONS (for parameter stability analysis)
+            # ================================================================
+            print(f"\n[STABILITY] Testing all {len(train_results)} parameter combinations on test set...")
 
         all_test_results = []  # Store test results for all param combos
 
@@ -2424,151 +2496,154 @@ def run_walk_forward(
     df_results = pd.DataFrame(split_results)
 
     if len(df_results) == 0:
-        print("\n✗ No successful splits")
+        if verbose:
+            print("\n✗ No successful splits")
         return df_results
 
-    # Print aggregate summary
-    print("\n" + "=" * 70)
-    print("WALK-FORWARD SUMMARY - TEST RESULTS ONLY")
-    print("=" * 70)
-    print(f"\nCompleted splits: {len(df_results)}/{splits}")
+    if verbose:
+        # Print aggregate summary
+        print("\n" + "=" * 70)
+        print("WALK-FORWARD SUMMARY - TEST RESULTS ONLY")
+        print("=" * 70)
+        print(f"\nCompleted splits: {len(df_results)}/{splits}")
 
-    print(f"\n{'AGGREGATE TEST METRICS'}")
-    print("-" * 70)
+        print(f"\n{'AGGREGATE TEST METRICS'}")
+        print("-" * 70)
 
-    # Trade statistics
-    total_test_trades = df_results['test_total_trades'].sum()
-    total_winning = df_results['test_winning_trades'].sum()
-    total_losing = df_results['test_losing_trades'].sum()
-    aggregate_win_rate = (total_winning / total_test_trades * 100) if total_test_trades > 0 else 0.0
+        # Trade statistics
+        total_test_trades = df_results['test_total_trades'].sum()
+        total_winning = df_results['test_winning_trades'].sum()
+        total_losing = df_results['test_losing_trades'].sum()
+        aggregate_win_rate = (total_winning / total_test_trades * 100) if total_test_trades > 0 else 0.0
 
-    print(f"{'Total trades across all splits':<40} {total_test_trades:.0f}")
-    print(f"{'  Winning trades':<40} {total_winning:.0f} ({aggregate_win_rate:.1f}%)")
-    print(f"{'  Losing trades':<40} {total_losing:.0f} ({100-aggregate_win_rate:.1f}%)")
+        print(f"{'Total trades across all splits':<40} {total_test_trades:.0f}")
+        print(f"{'  Winning trades':<40} {total_winning:.0f} ({aggregate_win_rate:.1f}%)")
+        print(f"{'  Losing trades':<40} {total_losing:.0f} ({100-aggregate_win_rate:.1f}%)")
 
-    # Profitability
-    total_gross_profit = df_results['test_gross_profit_pips'].sum()
-    total_gross_loss = df_results['test_gross_loss_pips'].sum()
-    aggregate_pf = total_gross_profit / total_gross_loss if total_gross_loss > 0 else float('inf')
-    pf_str = f"{aggregate_pf:.2f}" if aggregate_pf != float('inf') else "Inf"
+        # Profitability
+        total_gross_profit = df_results['test_gross_profit_pips'].sum()
+        total_gross_loss = df_results['test_gross_loss_pips'].sum()
+        aggregate_pf = total_gross_profit / total_gross_loss if total_gross_loss > 0 else float('inf')
+        pf_str = f"{aggregate_pf:.2f}" if aggregate_pf != float('inf') else "Inf"
 
-    print(f"\n{'Total Gross Profit':<40} {total_gross_profit:.2f} pips")
-    print(f"{'Total Gross Loss':<40} {total_gross_loss:.2f} pips")
-    print(f"{'Total Net PnL (after costs)':<40} {df_results['test_total_pnl_after_costs'].sum():.2f} pips")
-    print(f"{'Aggregate Profit Factor':<40} {pf_str}")
-    print(f"{'Mean Expected Payoff':<40} {df_results['test_expected_payoff_pips'].mean():.2f} pips")
+        print(f"\n{'Total Gross Profit':<40} {total_gross_profit:.2f} pips")
+        print(f"{'Total Gross Loss':<40} {total_gross_loss:.2f} pips")
+        print(f"{'Total Net PnL (after costs)':<40} {df_results['test_total_pnl_after_costs'].sum():.2f} pips")
+        print(f"{'Aggregate Profit Factor':<40} {pf_str}")
+        print(f"{'Mean Expected Payoff':<40} {df_results['test_expected_payoff_pips'].mean():.2f} pips")
 
-    # Per-split statistics
-    print(f"\n{'Mean Profit Factor (per split)':<40} {df_results['test_profit_factor'].mean():.2f}")
-    print(f"{'Median Profit Factor (per split)':<40} {df_results['test_profit_factor'].median():.2f}")
-    print(f"{'Mean PnL per split':<40} {df_results['test_total_pnl_after_costs'].mean():.2f} pips")
+        # Per-split statistics
+        print(f"\n{'Mean Profit Factor (per split)':<40} {df_results['test_profit_factor'].mean():.2f}")
+        print(f"{'Median Profit Factor (per split)':<40} {df_results['test_profit_factor'].median():.2f}")
+        print(f"{'Mean PnL per split':<40} {df_results['test_total_pnl_after_costs'].mean():.2f} pips")
 
-    # Risk metrics
-    print(f"\n{'Max Drawdown (worst split)':<40} {df_results['test_max_drawdown'].max():.2f} pips ({df_results['test_max_drawdown_pct'].max():.2f}%)")
-    print(f"{'Mean Recovery Factor':<40} {df_results['test_recovery_factor'].mean():.2f}")
+        # Risk metrics
+        print(f"\n{'Max Drawdown (worst split)':<40} {df_results['test_max_drawdown'].max():.2f} pips ({df_results['test_max_drawdown_pct'].max():.2f}%)")
+        print(f"{'Mean Recovery Factor':<40} {df_results['test_recovery_factor'].mean():.2f}")
 
-    # Win/Loss statistics
-    print(f"\n{'Mean Avg Win':<40} {df_results['test_avg_win_pips'].mean():.2f} pips")
-    print(f"{'Mean Avg Loss':<40} {df_results['test_avg_loss_pips'].mean():.2f} pips")
-    print(f"{'Largest Win (across splits)':<40} {df_results['test_largest_win_pips'].max():.2f} pips")
-    print(f"{'Largest Loss (across splits)':<40} {df_results['test_largest_loss_pips'].max():.2f} pips")
+        # Win/Loss statistics
+        print(f"\n{'Mean Avg Win':<40} {df_results['test_avg_win_pips'].mean():.2f} pips")
+        print(f"{'Mean Avg Loss':<40} {df_results['test_avg_loss_pips'].mean():.2f} pips")
+        print(f"{'Largest Win (across splits)':<40} {df_results['test_largest_win_pips'].max():.2f} pips")
+        print(f"{'Largest Loss (across splits)':<40} {df_results['test_largest_loss_pips'].max():.2f} pips")
 
-    # Direction breakdown
-    total_long = df_results['test_trade_count_long'].sum()
-    total_short = df_results['test_trade_count_short'].sum()
-    print(f"\n{'Total Long trades':<40} {total_long:.0f}")
-    print(f"{'Total Short trades':<40} {total_short:.0f}")
-    print(f"{'Mean Win Rate Long':<40} {df_results['test_win_rate_long'].mean():.1f}%")
-    print(f"{'Mean Win Rate Short':<40} {df_results['test_win_rate_short'].mean():.1f}%")
+        # Direction breakdown
+        total_long = df_results['test_trade_count_long'].sum()
+        total_short = df_results['test_trade_count_short'].sum()
+        print(f"\n{'Total Long trades':<40} {total_long:.0f}")
+        print(f"{'Total Short trades':<40} {total_short:.0f}")
+        print(f"{'Mean Win Rate Long':<40} {df_results['test_win_rate_long'].mean():.1f}%")
+        print(f"{'Mean Win Rate Short':<40} {df_results['test_win_rate_short'].mean():.1f}%")
 
-    # Overall performance
-    profitable_splits = (df_results['test_total_pnl_after_costs'] > 0).sum()
-    print(f"\n{'Profitable splits':<40} {profitable_splits}/{len(df_results)} ({profitable_splits/len(df_results)*100:.1f}%)")
+        # Overall performance
+        profitable_splits = (df_results['test_total_pnl_after_costs'] > 0).sum()
+        print(f"\n{'Profitable splits':<40} {profitable_splits}/{len(df_results)} ({profitable_splits/len(df_results)*100:.1f}%)")
 
-    # Overfitting detection (degradation metrics)
-    print(f"\n{'OVERFITTING DETECTION (Train → Test Degradation)'}")
-    print("-" * 70)
+        # Overfitting detection (degradation metrics)
+        print(f"\n{'OVERFITTING DETECTION (Train → Test Degradation)'}")
+        print("-" * 70)
 
-    # PF degradation (ratio = test_pf / train_pf)
-    median_pf_degradation = df_results['pf_degradation'].median()
-    worst_pf_degradation = df_results['pf_degradation'].min()
-    worst_pf_split = df_results.loc[df_results['pf_degradation'].idxmin(), 'split']
+        # PF degradation (ratio = test_pf / train_pf)
+        median_pf_degradation = df_results['pf_degradation'].median()
+        worst_pf_degradation = df_results['pf_degradation'].min()
+        worst_pf_split = df_results.loc[df_results['pf_degradation'].idxmin(), 'split']
 
-    print(f"{'Median PF Degradation':<40} {median_pf_degradation:.2f} (test/train ratio)")
-    print(f"{'Worst PF Degradation':<40} {worst_pf_degradation:.2f} (split {worst_pf_split:.0f})")
+        print(f"{'Median PF Degradation':<40} {median_pf_degradation:.2f} (test/train ratio)")
+        print(f"{'Worst PF Degradation':<40} {worst_pf_degradation:.2f} (split {worst_pf_split:.0f})")
 
-    # Expected payoff degradation
-    median_ep_degradation = df_results['expected_payoff_degradation'].median()
-    worst_ep_degradation = df_results['expected_payoff_degradation'].min()
-    worst_ep_split = df_results.loc[df_results['expected_payoff_degradation'].idxmin(), 'split']
+        # Expected payoff degradation
+        median_ep_degradation = df_results['expected_payoff_degradation'].median()
+        worst_ep_degradation = df_results['expected_payoff_degradation'].min()
+        worst_ep_split = df_results.loc[df_results['expected_payoff_degradation'].idxmin(), 'split']
 
-    print(f"{'Median Expected Payoff Degradation':<40} {median_ep_degradation:.2f} (test/train ratio)")
-    print(f"{'Worst Expected Payoff Degradation':<40} {worst_ep_degradation:.2f} (split {worst_ep_split:.0f})")
+        print(f"{'Median Expected Payoff Degradation':<40} {median_ep_degradation:.2f} (test/train ratio)")
+        print(f"{'Worst Expected Payoff Degradation':<40} {worst_ep_degradation:.2f} (split {worst_ep_split:.0f})")
 
-    # Interpretation
-    print(f"\nInterpretation:")
-    if median_pf_degradation >= 0.8:
-        print(f"  ✓ Good: Median PF degradation {median_pf_degradation:.2f} ≥ 0.8 (low overfitting)")
-    elif median_pf_degradation >= 0.6:
-        print(f"  ⚠ Moderate: Median PF degradation {median_pf_degradation:.2f} (some overfitting)")
-    else:
-        print(f"  ✗ Poor: Median PF degradation {median_pf_degradation:.2f} < 0.6 (high overfitting)")
+        # Interpretation
+        print(f"\nInterpretation:")
+        if median_pf_degradation >= 0.8:
+            print(f"  ✓ Good: Median PF degradation {median_pf_degradation:.2f} ≥ 0.8 (low overfitting)")
+        elif median_pf_degradation >= 0.6:
+            print(f"  ⚠ Moderate: Median PF degradation {median_pf_degradation:.2f} (some overfitting)")
+        else:
+            print(f"  ✗ Poor: Median PF degradation {median_pf_degradation:.2f} < 0.6 (high overfitting)")
 
-    if worst_pf_degradation < 0.5:
-        print(f"  ⚠ Warning: Worst split degradation {worst_pf_degradation:.2f} < 0.5 (severe degradation in split {worst_pf_split:.0f})")
+        if worst_pf_degradation < 0.5:
+            print(f"  ⚠ Warning: Worst split degradation {worst_pf_degradation:.2f} < 0.5 (severe degradation in split {worst_pf_split:.0f})")
 
-    print("=" * 70)
+        print("=" * 70)
 
-    # Monte Carlo sequence risk analysis
-    print("\n" + "=" * 70)
-    print("MONTE CARLO ANALYSIS - Sequence Risk (Trade Order Reshuffle)")
-    print("=" * 70)
+    if verbose:
+        # Monte Carlo sequence risk analysis
+        print("\n" + "=" * 70)
+        print("MONTE CARLO ANALYSIS - Sequence Risk (Trade Order Reshuffle)")
+        print("=" * 70)
 
-    # Aggregate MC statistics across splits
-    mc_median_dd_avg = df_results['mc_median_max_dd'].mean()
-    mc_95th_dd_avg = df_results['mc_95th_percentile_dd'].mean()
-    mc_max_dd_worst = df_results['mc_max_max_dd'].max()
-    mc_prob_loss_avg = df_results['mc_prob_loss'].mean()
-    mc_prob_dd_exceeds_avg = df_results['mc_prob_dd_exceeds_observed'].mean()
+        # Aggregate MC statistics across splits
+        mc_median_dd_avg = df_results['mc_median_max_dd'].mean()
+        mc_95th_dd_avg = df_results['mc_95th_percentile_dd'].mean()
+        mc_max_dd_worst = df_results['mc_max_max_dd'].max()
+        mc_prob_loss_avg = df_results['mc_prob_loss'].mean()
+        mc_prob_dd_exceeds_avg = df_results['mc_prob_dd_exceeds_observed'].mean()
 
-    # Observed vs MC comparison
-    observed_dd_avg = df_results['test_max_drawdown'].mean()
-    dd_ratio = observed_dd_avg / mc_median_dd_avg if mc_median_dd_avg > 0 else 1.0
+        # Observed vs MC comparison
+        observed_dd_avg = df_results['test_max_drawdown'].mean()
+        dd_ratio = observed_dd_avg / mc_median_dd_avg if mc_median_dd_avg > 0 else 1.0
 
-    print(f"\nDrawdown Statistics (averaged across splits):")
-    print(f"{'Observed Avg Max DD':<40} {observed_dd_avg:.2f} pips")
-    print(f"{'MC Median Max DD':<40} {mc_median_dd_avg:.2f} pips")
-    print(f"{'MC 95th Percentile DD':<40} {mc_95th_dd_avg:.2f} pips")
-    print(f"{'MC Maximum DD (worst split)':<40} {mc_max_dd_worst:.2f} pips")
+        print(f"\nDrawdown Statistics (averaged across splits):")
+        print(f"{'Observed Avg Max DD':<40} {observed_dd_avg:.2f} pips")
+        print(f"{'MC Median Max DD':<40} {mc_median_dd_avg:.2f} pips")
+        print(f"{'MC 95th Percentile DD':<40} {mc_95th_dd_avg:.2f} pips")
+        print(f"{'MC Maximum DD (worst split)':<40} {mc_max_dd_worst:.2f} pips")
 
-    print(f"\nSequence Risk:")
-    print(f"{'Avg P(final PnL < 0)':<40} {mc_prob_loss_avg*100:.1f}%")
-    print(f"{'Avg P(DD > observed)':<40} {mc_prob_dd_exceeds_avg*100:.1f}%")
+        print(f"\nSequence Risk:")
+        print(f"{'Avg P(final PnL < 0)':<40} {mc_prob_loss_avg*100:.1f}%")
+        print(f"{'Avg P(DD > observed)':<40} {mc_prob_dd_exceeds_avg*100:.1f}%")
 
-    print(f"\nInterpretation:")
-    if dd_ratio < 0.8:
-        print(f"  ✓ Lucky: Observed DD {dd_ratio:.2f}x median (got favorable trade order)")
-    elif dd_ratio > 1.2:
-        print(f"  ⚠ Unlucky: Observed DD {dd_ratio:.2f}x median (got unfavorable trade order)")
-    else:
-        print(f"  ~ Typical: Observed DD {dd_ratio:.2f}x median (trade order not extreme)")
+        print(f"\nInterpretation:")
+        if dd_ratio < 0.8:
+            print(f"  ✓ Lucky: Observed DD {dd_ratio:.2f}x median (got favorable trade order)")
+        elif dd_ratio > 1.2:
+            print(f"  ⚠ Unlucky: Observed DD {dd_ratio:.2f}x median (got unfavorable trade order)")
+        else:
+            print(f"  ~ Typical: Observed DD {dd_ratio:.2f}x median (trade order not extreme)")
 
-    if mc_prob_loss_avg > 0.4:
-        print(f"  ✗ High Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
-    elif mc_prob_loss_avg > 0.2:
-        print(f"  ⚠ Moderate Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
-    else:
-        print(f"  ✓ Low Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
+        if mc_prob_loss_avg > 0.4:
+            print(f"  ✗ High Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
+        elif mc_prob_loss_avg > 0.2:
+            print(f"  ⚠ Moderate Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
+        else:
+            print(f"  ✓ Low Risk: {mc_prob_loss_avg*100:.1f}% probability of loss with random order")
 
-    if mc_prob_dd_exceeds_avg > 0.7:
-        print(f"  ⚠ Optimistic DD: {mc_prob_dd_exceeds_avg*100:.1f}% chance of worse drawdown")
+        if mc_prob_dd_exceeds_avg > 0.7:
+            print(f"  ⚠ Optimistic DD: {mc_prob_dd_exceeds_avg*100:.1f}% chance of worse drawdown")
 
-    print("=" * 70)
+        print("=" * 70)
 
     # ========================================================================
     # PARAMETER PERFORMANCE ANALYSIS ACROSS SPLITS
     # ========================================================================
-    if len(all_train_results) > 0:
+    if len(all_train_results) > 0 and verbose:
         print("\n" + "=" * 70)
         print("PARAMETER PERFORMANCE ANALYSIS")
         print("=" * 70)
