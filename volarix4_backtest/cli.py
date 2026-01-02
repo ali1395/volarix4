@@ -11,6 +11,7 @@ from .api_client import SignalApiClient
 from .broker_sim import BrokerSimulator
 from .engine import BacktestEngine
 from .walk_forward import WalkForwardEngine
+from .grid_search import GridSearchEngine
 from .reporting import BacktestReporter
 
 
@@ -228,8 +229,44 @@ def main():
         pip_value=pip_value
     )
 
-    # Determine which engine to use
-    if config.is_year_based():
+    # Determine which engine to use based on mode
+    mode = config.get_mode()
+    logger.info(f"Execution mode: {mode}")
+
+    if mode == "grid_search":
+        # Grid search optimization
+        logger.info("Using Grid Search Engine")
+        engine = GridSearchEngine(
+            config=config,
+            data_source=data_source,
+            api_client=api_client,
+            broker=broker,
+            logger=logger
+        )
+
+        # Run grid search
+        try:
+            results = engine.run()
+        except Exception as e:
+            logger.error(f"Grid search failed: {e}", exc_info=True)
+            api_client.close()
+            return 1
+
+        # Auto-run best config if requested
+        if config.run_best_after and results.get("best_result"):
+            logger.info("\n" + "=" * 70)
+            logger.info("AUTO-RUN: Testing with best parameters")
+            logger.info("=" * 70)
+
+            best_config_path = results["output_files"]["best_config"]
+            return_code = _run_best_config(best_config_path, logger)
+
+            if return_code != 0:
+                logger.error("Best config run failed")
+                api_client.close()
+                return return_code
+
+    elif mode == "walk_forward":
         # Year-based walk-forward testing
         logger.info("Using Year-Based Walk-Forward Engine")
         engine = WalkForwardEngine(
@@ -239,6 +276,15 @@ def main():
             broker=broker,
             logger=logger
         )
+
+        # Run walk-forward
+        try:
+            results = engine.run()
+        except Exception as e:
+            logger.error(f"Walk-forward testing failed: {e}", exc_info=True)
+            api_client.close()
+            return 1
+
     else:
         # Single-period backtest
         logger.info("Using Single-Period Backtest Engine")
@@ -250,24 +296,30 @@ def main():
             logger=logger
         )
 
-    # Run backtest
-    try:
-        results = engine.run()
-    except Exception as e:
-        logger.error(f"Backtest failed: {e}", exc_info=True)
-        return 1
+        # Run backtest
+        try:
+            results = engine.run()
+        except Exception as e:
+            logger.error(f"Backtest failed: {e}", exc_info=True)
+            api_client.close()
+            return 1
 
     # Create reporter and save results
     reporter = BacktestReporter(output_dir=config.output_dir, logger=logger)
 
     # Save and print results
-    if config.is_year_based():
+    if mode == "grid_search":
+        # Grid search results already printed and saved by engine
+        logger.info(f"\nGrid search results saved to: {results['output_files']['grid_results'].parent}")
+
+    elif mode == "walk_forward":
         # Walk-forward results - print aggregate summary
         _print_walk_forward_summary(results, config, logger)
 
         # Save aggregate results
         # TODO: Implement walk-forward specific reporting
         logger.info(f"Walk-forward results saved to: {config.output_dir}")
+
     else:
         # Single-period results
         saved_files = reporter.save_results(
@@ -337,6 +389,71 @@ def _print_walk_forward_summary(results: dict, config: BacktestConfig, logger: l
     print(f"Avg Net Profit/Year: ${agg['avg_net_profit_per_year']:,.2f}")
     print(f"Aggregate Return: {agg['aggregate_return_pct']:.2f}%")
     print("=" * 70 + "\n")
+
+
+def _run_best_config(config_path: Path, logger: logging.Logger) -> int:
+    """Run walk-forward test with best config from grid search.
+
+    Args:
+        config_path: Path to best_merged_config.json
+        logger: Logger instance
+
+    Returns:
+        Exit code (0 = success, 1 = failure)
+    """
+    try:
+        # Load best config
+        best_config = BacktestConfig.from_json(str(config_path))
+
+        # Override mode to walk_forward (grid search already done)
+        best_config.mode = "walk_forward"
+
+        # Create output subdir for best run
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        best_config.output_dir = str(Path(best_config.output_dir).parent / f"best_run_{timestamp}")
+
+        # Create components
+        data_source = BarDataSource(
+            source="mt5",
+            symbol=best_config.symbol,
+            timeframe=best_config.timeframe,
+            start_date=best_config.start_date,
+            end_date=best_config.end_date,
+            bars=best_config.bars
+        )
+
+        api_client = SignalApiClient(
+            base_url=best_config.api_url,
+            timeout=best_config.api_timeout,
+            max_retries=best_config.api_max_retries,
+            logger=logger
+        )
+
+        pip_value = 0.0001 if "JPY" not in best_config.symbol else 0.01
+        broker = BrokerSimulator(
+            spread_pips=best_config.spread_pips,
+            slippage_pips=best_config.slippage_pips,
+            commission_per_side_per_lot=best_config.commission_per_side_per_lot,
+            usd_per_pip_per_lot=best_config.usd_per_pip_per_lot,
+            pip_value=pip_value
+        )
+
+        # Run walk-forward with best params
+        engine = WalkForwardEngine(best_config, data_source, api_client, broker, logger)
+        results = engine.run()
+
+        # Print summary
+        _print_walk_forward_summary(results, best_config, logger)
+
+        # Cleanup
+        api_client.close()
+
+        logger.info(f"\nBest config results saved to: {best_config.output_dir}")
+        return 0
+
+    except Exception as e:
+        logger.error(f"Failed to run best config: {e}", exc_info=True)
+        return 1
 
 
 if __name__ == "__main__":

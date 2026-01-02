@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Literal
 import json
 from pathlib import Path
 
@@ -14,6 +14,9 @@ class BacktestConfig:
     All signal generation is delegated to the API - this config only
     controls backtest simulation parameters (costs, risk, data range).
     """
+
+    # Execution mode
+    mode: Literal["single", "walk_forward", "grid_search"] = "walk_forward"
 
     # Trading pair and timeframe
     symbol: str = "EURUSD"
@@ -64,6 +67,13 @@ class BacktestConfig:
     save_trades_csv: bool = True
     save_equity_curve: bool = True
     verbose: bool = False
+
+    # Grid search settings (only used when mode="grid_search")
+    grid: Optional[Dict[str, List[Any]]] = None  # e.g., {"min_confidence": [0.6, 0.7, 0.8]}
+    objective: str = "profit_factor"  # Metric to optimize: profit_factor, net_profit, return_pct, etc.
+    top_n: int = 20  # Number of top results to save
+    n_jobs: int = -1  # Number of parallel workers (-1 = all cores, 1 = sequential)
+    run_best_after: bool = False  # Auto-run walk-forward with best params after grid search
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -135,6 +145,23 @@ class BacktestConfig:
     def is_year_based(self) -> bool:
         """Check if this is year-based walk-forward testing."""
         return self.test_years is not None and len(self.test_years) > 0
+
+    def is_grid_search(self) -> bool:
+        """Check if this is grid search mode."""
+        return self.mode == "grid_search" and self.grid is not None
+
+    def get_mode(self) -> str:
+        """Determine execution mode based on config.
+
+        Returns:
+            "grid_search", "walk_forward", or "single"
+        """
+        if self.is_grid_search():
+            return "grid_search"
+        elif self.is_year_based():
+            return "walk_forward"
+        else:
+            return "single"
 
 
 @dataclass

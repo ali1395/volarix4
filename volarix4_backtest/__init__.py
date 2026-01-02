@@ -31,6 +31,7 @@ from .api_client import SignalApiClient, SignalResponse
 from .broker_sim import BrokerSimulator, Trade, ExitReason
 from .engine import BacktestEngine
 from .walk_forward import WalkForwardEngine
+from .grid_search import GridSearchEngine
 from .reporting import BacktestReporter
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "ExitReason",
     "BacktestEngine",
     "WalkForwardEngine",
+    "GridSearchEngine",
     "BacktestReporter"
 ]

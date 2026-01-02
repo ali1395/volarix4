@@ -41,12 +41,24 @@ cd E:\prs\frx_news_root\volarix4
 python run.py
 ```
 
-### 2. Run Year-Based Walk-Forward Backtest
+### 2. Choose Your Workflow
 
-**Using JSON config (RECOMMENDED):**
+#### Option A: Grid Search (Find Best Parameters)
+```bash
+# Edit grid_search_config.json to set parameter ranges
+python -m volarix4_backtest --config volarix4_backtest/grid_search_config.json
+```
+
+This will:
+- Test all parameter combinations
+- Run walk-forward validation for each
+- Save best parameters
+- Auto-run walk-forward with best params (if `run_best_after: true`)
+
+#### Option B: Year-Based Walk-Forward (Test Specific Parameters)
 ```bash
 # Edit backtest_config.json to set your parameters
-python -m volarix4_backtest --config backtest_config.json
+python -m volarix4_backtest --config volarix4_backtest/backtest_config.json
 ```
 
 Example `backtest_config.json`:
@@ -78,6 +90,138 @@ python -m volarix4_backtest --config backtest_config_simple.json
 Or legacy CLI args:
 ```bash
 python -m volarix4_backtest --symbol EURUSD --timeframe H1 --bars 5000 --verbose
+```
+
+## Grid Search for Parameter Optimization
+
+### What is Grid Search?
+
+Grid search exhaustively tests all combinations of specified parameters using walk-forward validation, then selects the best combination based on your chosen objective (profit_factor, net_profit, etc.).
+
+### Grid Search Config Example
+
+```json
+{
+  "mode": "grid_search",
+
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "test_years": [2023, 2024, 2025],
+  "train_years_lookback": 2,
+
+  "grid": {
+    "min_confidence": [0.6, 0.7, 0.8],
+    "broken_level_cooldown_hours": [12, 24, 48],
+    "min_edge_pips": [1.5, 2.0, 2.5]
+  },
+
+  "objective": "profit_factor",
+  "top_n": 20,
+  "n_jobs": -1,
+  "run_best_after": true,
+
+  "api_url": "http://localhost:8000",
+  "spread_pips": 1.5,
+  "lot_size": 0.01,
+  "output_dir": "./backtest_results",
+  "verbose": false
+}
+```
+
+### Grid Parameters Explained
+
+- **`mode`**: Set to `"grid_search"` to enable grid search
+- **`grid`**: Dictionary of parameters to test. Each key is a parameter name, each value is a list of values to try
+- **`objective`**: Metric to optimize. Options:
+  - `"profit_factor"` - Gross profit / gross loss (recommended)
+  - `"net_profit"` - Total USD profit
+  - `"return_pct"` - Return percentage
+  - `"win_rate"` - Winning trades / total trades
+  - Any metric from walk-forward aggregate results
+- **`top_n`**: Number of top results to save (default: 20)
+- **`n_jobs`**: Number of parallel workers (default: -1 = all CPU cores, 1 = sequential)
+- **`run_best_after`**: Auto-run walk-forward with best params after grid search (default: false)
+
+### How Grid Search Works
+
+1. **Generate combinations**: Creates all combinations of grid parameters
+   - Example: 3 confidence values × 3 cooldown hours × 3 edge pips = 27 combinations
+2. **Parallel evaluation**: Tests each combination using walk-forward validation (uses all CPU cores)
+3. **Rank by objective**: Sorts results by your chosen metric
+4. **Save outputs**:
+   - `grid_results.csv` - All combinations with metrics
+   - `top_N_results.csv` - Top N combinations
+   - `best_params.json` - Best parameter values only
+   - `best_merged_config.json` - Full config with best parameters
+5. **Auto-run best** (if enabled): Automatically runs walk-forward with best parameters
+
+### Running Grid Search
+
+```bash
+# 1. Edit grid_search_config.json
+# 2. Start API server
+cd E:\prs\frx_news_root\volarix4
+python run.py
+
+# 3. Run grid search (in another terminal)
+python -m volarix4_backtest --config volarix4_backtest/grid_search_config.json
+```
+
+### Output Files
+
+Grid search creates a timestamped directory under `backtest_results/`:
+
+```
+backtest_results/
+└── grid_search_20260102_123456/
+    ├── grid_results.csv           # All combinations
+    ├── top_20_results.csv          # Top 20 by objective
+    ├── best_params.json            # Best params only
+    ├── best_merged_config.json     # Full config with best params
+    └── best_run_20260102_123500/   # Auto-run results (if enabled)
+        └── ... walk-forward results
+```
+
+### Example Output
+
+```
+======================================================================
+GRID SEARCH OPTIMIZATION
+======================================================================
+Objective: profit_factor
+Parallel workers: 8
+Grid parameters:
+  min_confidence: [0.6, 0.7, 0.8]
+  broken_level_cooldown_hours: [12, 24, 48]
+  min_edge_pips: [1.5, 2.0, 2.5]
+======================================================================
+Total combinations to test: 27
+
+[27/27] Completed {min_confidence: 0.7, ...} → profit_factor = 1.89
+
+======================================================================
+TOP 5 PARAMETER COMBINATIONS
+======================================================================
+1. profit_factor = 1.89
+   Parameters: {min_confidence: 0.7, broken_level_cooldown_hours: 24, min_edge_pips: 2.0}
+   Total Trades: 145
+   Win Rate: 64.83%
+
+2. profit_factor = 1.76
+   Parameters: {min_confidence: 0.8, broken_level_cooldown_hours: 24, min_edge_pips: 2.0}
+   ...
+======================================================================
+```
+
+### Using Best Parameters
+
+**Option 1: Auto-run (set `run_best_after: true`)**
+- Grid search automatically runs walk-forward with best params
+- Results saved in `best_run_*/` subdirectory
+
+**Option 2: Manual run**
+```bash
+python -m volarix4_backtest --config backtest_results/grid_search_*/best_merged_config.json
 ```
 
 ## Configuration File Format

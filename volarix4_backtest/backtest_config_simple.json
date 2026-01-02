@@ -1,0 +1,15 @@
+{
+  "comment": "Simple single-period backtest (no walk-forward)",
+
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "bars": 5000,
+
+  "api_url": "http://localhost:8000",
+
+  "min_confidence": 0.7,
+  "spread_pips": 1.5,
+  "lot_size": 0.01,
+
+  "verbose": true
+}

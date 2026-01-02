@@ -1,0 +1,29 @@
+{
+  "comment": "Grid Search Configuration Example",
+
+  "mode": "grid_search",
+
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "test_years": [2023, 2024, 2025],
+  "train_years_lookback": 2,
+
+  "grid": {
+    "min_confidence": [0.6, 0.7, 0.8],
+    "broken_level_cooldown_hours": [12, 24, 48],
+    "min_edge_pips": [1.5, 2.0, 2.5]
+  },
+
+  "objective": "profit_factor",
+  "top_n": 20,
+  "n_jobs": -1,
+  "run_best_after": true,
+
+  "api_url": "http://localhost:8000",
+  "spread_pips": 1.5,
+  "slippage_pips": 0.5,
+  "lot_size": 0.01,
+
+  "output_dir": "./backtest_results",
+  "verbose": false
+}
