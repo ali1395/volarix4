@@ -10,6 +10,7 @@ from .data_source import BarDataSource
 from .api_client import SignalApiClient
 from .broker_sim import BrokerSimulator
 from .engine import BacktestEngine
+from .walk_forward import WalkForwardEngine
 from .reporting import BacktestReporter
 
 
@@ -23,6 +24,9 @@ def parse_args():
         description="Volarix 4 Backtest - API-based backtesting engine",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+
+    # Config file (NEW - preferred method)
+    parser.add_argument("--config", type=str, help="Path to JSON config file (overrides all other args)")
 
     # Trading pair and timeframe
     parser.add_argument("--symbol", type=str, default="EURUSD", help="Trading symbol")
@@ -101,25 +105,44 @@ def main():
     """Main CLI entry point."""
     args = parse_args()
 
-    # Setup logging
-    setup_logging(args.verbose)
-    logger = logging.getLogger(__name__)
+    # Load config from JSON file if provided
+    if args.config:
+        logger_temp = logging.getLogger(__name__)
+        logging.basicConfig(level=logging.INFO)
+        logger_temp.info(f"Loading config from: {args.config}")
 
-    # Parse dates if provided
-    start_date = None
-    end_date = None
-    if args.start:
-        start_date = datetime.strptime(args.start, "%Y-%m-%d")
-    if args.end:
-        end_date = datetime.strptime(args.end, "%Y-%m-%d")
+        try:
+            config = BacktestConfig.from_json(args.config)
+        except Exception as e:
+            logger_temp.error(f"Failed to load config file: {e}")
+            return 1
 
-    # Validate inputs
-    if args.source in ["csv", "parquet"] and not args.file:
-        logger.error(f"--file is required when using --source={args.source}")
-        return 1
+        # Setup logging based on config
+        setup_logging(config.verbose)
+        logger = logging.getLogger(__name__)
+        logger.info("Config loaded successfully from JSON file")
 
-    # Create config
-    config = BacktestConfig(
+    else:
+        # Legacy CLI args mode
+        # Setup logging
+        setup_logging(args.verbose)
+        logger = logging.getLogger(__name__)
+
+        # Parse dates if provided
+        start_date = None
+        end_date = None
+        if args.start:
+            start_date = datetime.strptime(args.start, "%Y-%m-%d")
+        if args.end:
+            end_date = datetime.strptime(args.end, "%Y-%m-%d")
+
+        # Validate inputs
+        if args.source in ["csv", "parquet"] and not args.file:
+            logger.error(f"--file is required when using --source={args.source}")
+            return 1
+
+        # Create config from CLI args
+        config = BacktestConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
         start_date=start_date,
@@ -149,52 +172,83 @@ def main():
         verbose=args.verbose
     )
 
+    # Determine data source settings
+    if args.config:
+        # Use config settings
+        source = "mt5"  # Default for config mode
+        file_path = None
+        start_date = config.start_date
+        end_date = config.end_date
+        bars = config.bars
+    else:
+        # Use CLI args
+        source = args.source
+        file_path = args.file
+        start_date = start_date  # Already parsed above
+        end_date = end_date  # Already parsed above
+        bars = args.bars
+
     # Create data source
     data_source = BarDataSource(
-        source=args.source,
-        symbol=args.symbol,
-        timeframe=args.timeframe,
+        source=source,
+        symbol=config.symbol,
+        timeframe=config.timeframe,
         start_date=start_date,
         end_date=end_date,
-        bars=args.bars
+        bars=bars
     )
 
-    # Load data
-    logger.info("Loading data...")
-    try:
-        data_source.load(file_path=args.file)
-    except Exception as e:
-        logger.error(f"Failed to load data: {e}")
-        return 1
+    # For year-based testing, don't load yet (will be loaded in walk-forward engine)
+    if not config.is_year_based():
+        # Load data for single-period backtest
+        logger.info("Loading data...")
+        try:
+            data_source.load(file_path=file_path)
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}")
+            return 1
 
     # Create API client
     api_client = SignalApiClient(
-        base_url=args.api_url,
-        timeout=args.api_timeout,
-        max_retries=args.api_max_retries,
+        base_url=config.api_url,
+        timeout=config.api_timeout,
+        max_retries=config.api_max_retries,
         logger=logger
     )
 
     # Create broker simulator
     # Calculate pip value based on symbol (simple heuristic)
-    pip_value = 0.0001 if "JPY" not in args.symbol else 0.01
+    pip_value = 0.0001 if "JPY" not in config.symbol else 0.01
 
     broker = BrokerSimulator(
-        spread_pips=args.spread_pips,
-        slippage_pips=args.slippage_pips,
-        commission_per_side_per_lot=args.commission,
-        usd_per_pip_per_lot=args.usd_per_pip,
+        spread_pips=config.spread_pips,
+        slippage_pips=config.slippage_pips,
+        commission_per_side_per_lot=config.commission_per_side_per_lot,
+        usd_per_pip_per_lot=config.usd_per_pip_per_lot,
         pip_value=pip_value
     )
 
-    # Create backtest engine
-    engine = BacktestEngine(
-        config=config,
-        data_source=data_source,
-        api_client=api_client,
-        broker=broker,
-        logger=logger
-    )
+    # Determine which engine to use
+    if config.is_year_based():
+        # Year-based walk-forward testing
+        logger.info("Using Year-Based Walk-Forward Engine")
+        engine = WalkForwardEngine(
+            config=config,
+            data_source=data_source,
+            api_client=api_client,
+            broker=broker,
+            logger=logger
+        )
+    else:
+        # Single-period backtest
+        logger.info("Using Single-Period Backtest Engine")
+        engine = BacktestEngine(
+            config=config,
+            data_source=data_source,
+            api_client=api_client,
+            broker=broker,
+            logger=logger
+        )
 
     # Run backtest
     try:
@@ -204,18 +258,28 @@ def main():
         return 1
 
     # Create reporter and save results
-    reporter = BacktestReporter(output_dir=args.output_dir, logger=logger)
+    reporter = BacktestReporter(output_dir=config.output_dir, logger=logger)
 
-    saved_files = reporter.save_results(
-        results=results,
-        symbol=args.symbol,
-        timeframe=args.timeframe,
-        save_trades=config.save_trades_csv,
-        save_equity=config.save_equity_curve
-    )
+    # Save and print results
+    if config.is_year_based():
+        # Walk-forward results - print aggregate summary
+        _print_walk_forward_summary(results, config, logger)
 
-    # Print summary
-    reporter.print_summary(results, args.symbol, args.timeframe)
+        # Save aggregate results
+        # TODO: Implement walk-forward specific reporting
+        logger.info(f"Walk-forward results saved to: {config.output_dir}")
+    else:
+        # Single-period results
+        saved_files = reporter.save_results(
+            results=results,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+            save_trades=config.save_trades_csv,
+            save_equity=config.save_equity_curve
+        )
+
+        # Print summary
+        reporter.print_summary(results, config.symbol, config.timeframe)
 
     # Print API client stats
     api_stats = api_client.get_stats()
@@ -230,6 +294,46 @@ def main():
 
     logger.info("\nBacktest complete!")
     return 0
+
+
+def _print_walk_forward_summary(results: dict, config: BacktestConfig, logger: logging.Logger):
+    """Print walk-forward testing summary."""
+    print("\n" + "=" * 70)
+    print("WALK-FORWARD TESTING SUMMARY")
+    print("=" * 70)
+    print(f"Symbol: {config.symbol}")
+    print(f"Timeframe: {config.timeframe}")
+    print(f"Test Years: {config.test_years}")
+    print(f"Train Years Lookback: {config.train_years_lookback}")
+    print()
+
+    # Print results by year
+    print("RESULTS BY YEAR")
+    print("-" * 70)
+    for year, year_results in results["by_year"].items():
+        print(f"{year}:")
+        print(f"  Trades: {year_results['total_trades']}")
+        print(f"  Win Rate: {year_results['win_rate'] * 100:.2f}%")
+        print(f"  Net Profit: ${year_results['net_profit_usd']:,.2f}")
+        print(f"  Return: {year_results['return_pct']:.2f}%")
+    print()
+
+    # Print aggregate metrics
+    agg = results["aggregate"]
+    print("AGGREGATE METRICS (All Years)")
+    print("-" * 70)
+    print(f"Total Years Tested: {agg['total_years']}")
+    print(f"Total Trades: {agg['total_trades']}")
+    print(f"Avg Trades/Year: {agg['avg_trades_per_year']:.1f}")
+    print(f"Winning Trades: {agg['winning_trades']}")
+    print(f"Losing Trades: {agg['losing_trades']}")
+    print(f"Win Rate: {agg['win_rate'] * 100:.2f}%")
+    print(f"Profit Factor: {agg['profit_factor']:.2f}")
+    print()
+    print(f"Aggregate Net Profit: ${agg['aggregate_net_profit']:,.2f}")
+    print(f"Avg Net Profit/Year: ${agg['avg_net_profit_per_year']:,.2f}")
+    print(f"Aggregate Return: {agg['aggregate_return_pct']:.2f}%")
+    print("=" * 70 + "\n")
 
 
 if __name__ == "__main__":

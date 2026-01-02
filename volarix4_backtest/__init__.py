@@ -30,6 +30,7 @@ from .data_source import BarDataSource, Bar
 from .api_client import SignalApiClient, SignalResponse
 from .broker_sim import BrokerSimulator, Trade, ExitReason
 from .engine import BacktestEngine
+from .walk_forward import WalkForwardEngine
 from .reporting import BacktestReporter
 
 __all__ = [
@@ -43,5 +44,6 @@ __all__ = [
     "Trade",
     "ExitReason",
     "BacktestEngine",
+    "WalkForwardEngine",
     "BacktestReporter"
 ]

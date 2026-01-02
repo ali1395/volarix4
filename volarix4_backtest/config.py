@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
+import json
+from pathlib import Path
 
 
 @dataclass
@@ -17,10 +19,14 @@ class BacktestConfig:
     symbol: str = "EURUSD"
     timeframe: str = "H1"
 
-    # Data range
+    # Data range (legacy - use test_years for year-based walk-forward)
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     bars: Optional[int] = None  # If set, use last N bars instead of date range
+
+    # Year-based walk-forward testing
+    test_years: Optional[List[int]] = None  # e.g., [2023, 2024, 2025]
+    train_years_lookback: int = 2  # Number of years to train on before each test year
 
     # API configuration
     api_url: str = "http://localhost:8000"
@@ -72,6 +78,63 @@ class BacktestConfig:
 
         if self.bars is not None and self.bars < self.warmup_bars:
             raise ValueError(f"bars ({self.bars}) must be >= warmup_bars ({self.warmup_bars})")
+
+        if self.test_years is not None and self.train_years_lookback < 1:
+            raise ValueError(f"train_years_lookback must be >= 1, got: {self.train_years_lookback}")
+
+    @classmethod
+    def from_json(cls, filepath: str) -> "BacktestConfig":
+        """Load configuration from JSON file.
+
+        Args:
+            filepath: Path to JSON config file
+
+        Returns:
+            BacktestConfig instance
+
+        Example JSON:
+            {
+                "symbol": "EURUSD",
+                "timeframe": "H1",
+                "test_years": [2023, 2024, 2025],
+                "train_years_lookback": 2,
+                "api_url": "http://localhost:8000",
+                "min_confidence": 0.7,
+                "spread_pips": 1.5,
+                "lot_size": 0.01
+            }
+        """
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+
+        # Convert date strings to datetime if present
+        if 'start_date' in data and data['start_date']:
+            data['start_date'] = datetime.strptime(data['start_date'], "%Y-%m-%d")
+        if 'end_date' in data and data['end_date']:
+            data['end_date'] = datetime.strptime(data['end_date'], "%Y-%m-%d")
+
+        return cls(**data)
+
+    def to_json(self, filepath: str):
+        """Save configuration to JSON file.
+
+        Args:
+            filepath: Path to save JSON config file
+        """
+        data = self.__dict__.copy()
+
+        # Convert datetime to string
+        if data.get('start_date'):
+            data['start_date'] = data['start_date'].strftime("%Y-%m-%d")
+        if data.get('end_date'):
+            data['end_date'] = data['end_date'].strftime("%Y-%m-%d")
+
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def is_year_based(self) -> bool:
+        """Check if this is year-based walk-forward testing."""
+        return self.test_years is not None and len(self.test_years) > 0
 
 
 @dataclass

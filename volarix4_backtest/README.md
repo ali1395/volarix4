@@ -7,6 +7,8 @@ API-based backtesting engine for Volarix 4 strategy.
 This package provides a clean, OOP-based backtesting framework that:
 
 - **API-only signals**: ALL signal generation goes through the HTTP `/signal` endpoint (no direct strategy imports)
+- **JSON configuration**: All parameters set in config file (no complex CLI args)
+- **Year-based walk-forward**: Train on N previous years, test on target year
 - **Realistic execution**: Simulates broker costs (spread, slippage, commission) and partial TPs
 - **Deterministic results**: Same bars + API responses = same results every time
 - **Clean architecture**: Separated concerns with testable classes
@@ -31,64 +33,153 @@ volarix4_backtest/
 
 No installation needed - this is a standalone package within the Volarix 4 repo.
 
-## Usage
+## Quick Start
 
-### Basic Example
-
+### 1. Start API Server
 ```bash
-# Start the API server first (in another terminal)
-cd volarix4
+cd E:\prs\frx_news_root\volarix4
 python run.py
-
-# Run backtest using MT5 data
-python -m volarix4_backtest \
-  --symbol EURUSD \
-  --timeframe H1 \
-  --start 2023-01-01 \
-  --end 2023-12-31 \
-  --api-url http://localhost:8000
 ```
 
-### Using CSV/Parquet Data
+### 2. Run Year-Based Walk-Forward Backtest
+
+**Using JSON config (RECOMMENDED):**
+```bash
+# Edit backtest_config.json to set your parameters
+python -m volarix4_backtest --config backtest_config.json
+```
+
+Example `backtest_config.json`:
+```json
+{
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "test_years": [2023, 2024, 2025],
+  "train_years_lookback": 2,
+  "min_confidence": 0.7,
+  "spread_pips": 1.5,
+  "lot_size": 0.01,
+  "verbose": false
+}
+```
+
+This will:
+- Test 2023 (train on 2021-2022)
+- Test 2024 (train on 2022-2023)
+- Test 2025 (train on 2023-2024)
+
+### 3. Run Simple Single-Period Backtest
 
 ```bash
-# From CSV file
-python -m volarix4_backtest \
-  --source csv \
-  --file ./data/EURUSD_H1.csv \
-  --symbol EURUSD \
-  --timeframe H1
-
-# From Parquet file
-python -m volarix4_backtest \
-  --source parquet \
-  --file ./data/EURUSD_H1.parquet \
-  --symbol EURUSD \
-  --timeframe H1
+# Use simple config
+python -m volarix4_backtest --config backtest_config_simple.json
 ```
 
-### Advanced Options
-
+Or legacy CLI args:
 ```bash
-python -m volarix4_backtest \
-  --symbol EURUSD \
-  --timeframe H1 \
-  --start 2023-01-01 \
-  --end 2023-12-31 \
-  --api-url http://localhost:8000 \
-  --min-confidence 0.7 \
-  --broken-level-cooldown-hours 24 \
-  --broken-level-break-pips 15 \
-  --min-edge-pips 2.0 \
-  --spread-pips 1.5 \
-  --slippage-pips 0.5 \
-  --commission 3.5 \
-  --lot-size 0.01 \
-  --initial-balance 10000 \
-  --fill-at next_open \
-  --output-dir ./results \
-  --verbose
+python -m volarix4_backtest --symbol EURUSD --timeframe H1 --bars 5000 --verbose
 ```
+
+## Configuration File Format
+
+### Full Example (Year-Based Walk-Forward)
+```json
+{
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+
+  "test_years": [2023, 2024, 2025],
+  "train_years_lookback": 2,
+
+  "api_url": "http://localhost:8000",
+  "api_timeout": 30.0,
+  "api_max_retries": 3,
+  "use_optimized_mode": true,
+  "lookback_bars": 400,
+
+  "min_confidence": 0.7,
+  "broken_level_cooldown_hours": 24.0,
+  "broken_level_break_pips": 15.0,
+  "min_edge_pips": 2.0,
+
+  "spread_pips": 1.5,
+  "slippage_pips": 0.5,
+  "commission_per_side_per_lot": 3.5,
+  "usd_per_pip_per_lot": 10.0,
+  "lot_size": 0.01,
+
+  "initial_balance_usd": 10000.0,
+  "risk_percent_per_trade": 1.0,
+
+  "fill_at": "next_open",
+  "warmup_bars": 200,
+
+  "output_dir": "./backtest_results",
+  "save_trades_csv": true,
+  "save_equity_curve": true,
+  "verbose": false
+}
+```
+
+### Simple Example (Single Period)
+```json
+{
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "bars": 5000,
+  "min_confidence": 0.7,
+  "verbose": true
+}
+```
+
+## Configuration Parameters
+
+### Trading Setup
+- `symbol`: Trading pair (e.g., "EURUSD")
+- `timeframe`: Timeframe ("H1", "M15", "D1", etc.)
+
+### Year-Based Walk-Forward
+- `test_years`: Array of years to test (e.g., `[2023, 2024, 2025]`)
+- `train_years_lookback`: Number of years to train on before each test year (default: 2)
+
+### Legacy Date Range (single-period only)
+- `start_date`: Start date "YYYY-MM-DD"
+- `end_date`: End date "YYYY-MM-DD"
+- `bars`: Number of recent bars (alternative to dates)
+
+### API Configuration
+- `api_url`: API base URL (default: "http://localhost:8000")
+- `api_timeout`: Timeout in seconds (default: 30.0)
+- `api_max_retries`: Max retries (default: 3)
+- `use_optimized_mode`: Use bar_time mode (default: true)
+- `lookback_bars`: Bars for signal generation (default: 400)
+
+### Parity Parameters
+- `min_confidence`: Min confidence threshold
+- `broken_level_cooldown_hours`: Cooldown period for broken levels
+- `broken_level_break_pips`: Pips threshold for level breakage
+- `min_edge_pips`: Minimum edge after costs
+
+### Cost Model
+- `spread_pips`: Spread cost (default: 1.5)
+- `slippage_pips`: Slippage per execution (default: 0.5)
+- `commission_per_side_per_lot`: Commission in USD (default: 3.5)
+- `usd_per_pip_per_lot`: USD per pip per lot (default: 10.0)
+- `lot_size`: Position size in lots (default: 0.01)
+
+### Risk Management
+- `initial_balance_usd`: Starting balance (default: 10000.0)
+- `risk_percent_per_trade`: Risk % per trade (default: 1.0)
+
+### Execution
+- `fill_at`: "next_open" (no peeking) or "signal_close" (default: "next_open")
+- `warmup_bars`: Min bars before first signal (default: 200)
+
+### Output
+- `output_dir`: Results directory (default: "./backtest_results")
+- `save_trades_csv`: Save trades CSV (default: true)
+- `save_equity_curve`: Save equity curve CSV (default: true)
+- `verbose`: Verbose logging (default: false)
 
 ## Command-Line Arguments
 
@@ -188,66 +279,132 @@ This ensures **zero imports** of `volarix4.core.*` modules (except `fetch_ohlc` 
 
 ## Example Workflow
 
-1. **Start API server**:
+### Year-Based Walk-Forward Testing
+
+1. **Create/edit config file** (`backtest_config.json`):
+   ```json
+   {
+     "symbol": "EURUSD",
+     "timeframe": "H1",
+     "test_years": [2023, 2024, 2025],
+     "train_years_lookback": 2,
+     "min_confidence": 0.7,
+     "verbose": true
+   }
+   ```
+
+2. **Start API server**:
    ```bash
-   cd volarix4
+   cd E:\prs\frx_news_root\volarix4
    python run.py
    ```
 
-2. **Run backtest**:
+3. **Run walk-forward test**:
    ```bash
-   python -m volarix4_backtest --symbol EURUSD --timeframe H1 --bars 5000 --verbose
+   python -m volarix4_backtest --config backtest_config.json
    ```
 
-3. **Check results**:
-   ```bash
-   ls backtest_results/
-   # EURUSD_H1_20260101_120000_trades.csv
-   # EURUSD_H1_20260101_120000_equity.csv
-   # EURUSD_H1_20260101_120000_summary.txt
+4. **View results**:
+   ```
+   ======================================================================
+   WALK-FORWARD TESTING SUMMARY
+   ======================================================================
+   Test Years: [2023, 2024, 2025]
+   Train Years Lookback: 2
+
+   RESULTS BY YEAR
+   ----------------------------------------------------------------------
+   2023:
+     Trades: 45
+     Win Rate: 62.22%
+     Net Profit: $1,234.56
+     Return: 12.35%
+   2024:
+     Trades: 38
+     Win Rate: 57.89%
+     Net Profit: $987.65
+     Return: 9.88%
+   2025:
+     Trades: 42
+     Win Rate: 64.29%
+     Net Profit: $1,456.78
+     Return: 14.57%
+
+   AGGREGATE METRICS (All Years)
+   ----------------------------------------------------------------------
+   Total Years Tested: 3
+   Total Trades: 125
+   Avg Trades/Year: 41.7
+   Win Rate: 61.60%
+   Profit Factor: 1.78
+   Aggregate Net Profit: $3,678.99
+   Aggregate Return: 36.79%
+   ======================================================================
    ```
 
 ## Programmatic Usage
 
+### Year-Based Walk-Forward
 ```python
 from volarix4_backtest import (
     BacktestConfig,
     BarDataSource,
     SignalApiClient,
     BrokerSimulator,
-    BacktestEngine,
-    BacktestReporter
+    WalkForwardEngine
 )
 
-# Create config
+# Load config from JSON
+config = BacktestConfig.from_json("backtest_config.json")
+
+# Or create programmatically
 config = BacktestConfig(
     symbol="EURUSD",
     timeframe="H1",
-    bars=5000,
-    api_url="http://localhost:8000"
+    test_years=[2023, 2024, 2025],
+    train_years_lookback=2,
+    min_confidence=0.7,
+    verbose=True
 )
 
 # Create components
+data_source = BarDataSource(source="mt5", symbol="EURUSD", timeframe="H1")
+api_client = SignalApiClient(base_url="http://localhost:8000")
+broker = BrokerSimulator(
+    spread_pips=1.5, slippage_pips=0.5, commission_per_side_per_lot=3.5,
+    usd_per_pip_per_lot=10.0, pip_value=0.0001
+)
+
+# Run walk-forward
+engine = WalkForwardEngine(config, data_source, api_client, broker)
+results = engine.run()
+
+# Results structure:
+# results = {
+#     "by_year": {
+#         2023: {...},  # Results for 2023
+#         2024: {...},  # Results for 2024
+#         2025: {...}   # Results for 2025
+#     },
+#     "aggregate": {
+#         "total_trades": 125,
+#         "win_rate": 0.616,
+#         "aggregate_net_profit": 3678.99,
+#         ...
+#     }
+# }
+```
+
+### Single-Period Backtest
+```python
+from volarix4_backtest import BacktestConfig, BacktestEngine, ...
+
+config = BacktestConfig(symbol="EURUSD", timeframe="H1", bars=5000)
 data_source = BarDataSource(source="mt5", symbol="EURUSD", timeframe="H1", bars=5000)
 data_source.load()
 
-api_client = SignalApiClient(base_url="http://localhost:8000")
-broker = BrokerSimulator(
-    spread_pips=1.5,
-    slippage_pips=0.5,
-    commission_per_side_per_lot=3.5,
-    usd_per_pip_per_lot=10.0,
-    pip_value=0.0001
-)
-
-# Run backtest
 engine = BacktestEngine(config, data_source, api_client, broker)
 results = engine.run()
-
-# Save results
-reporter = BacktestReporter(output_dir="./results")
-reporter.save_results(results, "EURUSD", "H1")
-reporter.print_summary(results, "EURUSD", "H1")
 ```
 
 ## Design Principles
@@ -258,21 +415,49 @@ reporter.print_summary(results, "EURUSD", "H1")
 4. **Determinism**: Same inputs = same outputs
 5. **Realistic simulation**: Proper fill model and cost accounting
 
+## Year-Based Walk-Forward Testing
+
+### How It Works
+
+When you set `test_years` in the config, the backtest automatically switches to walk-forward mode:
+
+```json
+{
+  "test_years": [2023, 2024, 2025],
+  "train_years_lookback": 2
+}
+```
+
+**Execution:**
+- **Test 2023**: Train on 2021-2022 data, test on 2023 data
+- **Test 2024**: Train on 2022-2023 data, test on 2024 data
+- **Test 2025**: Train on 2023-2024 data, test on 2025 data
+
+**Note**: Currently, the "training" phase doesn't optimize parameters - it just uses the configured parameters on the test period. If you want parameter optimization, you can extend `WalkForwardEngine._run_test_period()` to run parameter sweeps on training data.
+
+### Benefits
+
+1. **Out-of-sample testing**: Each year tested with parameters from past data
+2. **Realistic performance**: Simulates forward testing without look-ahead bias
+3. **Robustness validation**: Consistent performance across years indicates robust strategy
+4. **Overfitting detection**: Large train/test performance gap indicates overfitting
+
 ## Migrating from Old backtest.py
 
 The old `tests/backtest.py` directly imported strategy modules. This new package:
 
+- ✅ **JSON config files** (no complex CLI args)
+- ✅ **Year-based walk-forward** (train on past, test on target)
 - ✅ Calls HTTP API for signals (no strategy imports)
 - ✅ Clean OOP design (not monolithic)
 - ✅ Proper separation of concerns
 - ✅ Modular and testable
-- ✅ Supports both optimized (bar_time) and legacy (data array) modes
 - ✅ Import guard test to prevent regressions
 
-To migrate, simply:
-1. Start the API server
-2. Use this package instead of old backtest.py
-3. All strategy parameters now passed via API request
+To migrate:
+1. Create `backtest_config.json` with your parameters
+2. Start the API server
+3. Run: `python -m volarix4_backtest --config backtest_config.json`
 
 ## Troubleshooting
 
