@@ -176,8 +176,8 @@ def main():
     # Determine data source settings
     if args.config:
         # Use config settings
-        source = "mt5"  # Default for config mode
-        file_path = None
+        source = config.source
+        file_path = config.file_path
         start_date = config.start_date
         end_date = config.end_date
         bars = config.bars
@@ -196,7 +196,8 @@ def main():
         timeframe=config.timeframe,
         start_date=start_date,
         end_date=end_date,
-        bars=bars
+        bars=bars,
+        file_path=file_path
     )
 
     # For year-based testing, don't load yet (will be loaded in walk-forward engine)
@@ -414,12 +415,13 @@ def _run_best_config(config_path: Path, logger: logging.Logger) -> int:
 
         # Create components
         data_source = BarDataSource(
-            source="mt5",
+            source=best_config.source,
             symbol=best_config.symbol,
             timeframe=best_config.timeframe,
             start_date=best_config.start_date,
             end_date=best_config.end_date,
-            bars=best_config.bars
+            bars=best_config.bars,
+            file_path=best_config.file_path
         )
 
         api_client = SignalApiClient(

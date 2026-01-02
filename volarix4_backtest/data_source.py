@@ -49,7 +49,8 @@ class BarDataSource:
         timeframe: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        bars: Optional[int] = None
+        bars: Optional[int] = None,
+        file_path: Optional[str] = None
     ):
         """Initialize data source.
 
@@ -60,6 +61,7 @@ class BarDataSource:
             start_date: Start date for filtering (optional)
             end_date: End date for filtering (optional)
             bars: Number of most recent bars to load (alternative to date range)
+            file_path: Path to CSV/Parquet file (optional, stored for later use)
         """
         self.source = source
         self.symbol = symbol
@@ -67,13 +69,14 @@ class BarDataSource:
         self.start_date = start_date
         self.end_date = end_date
         self.bars = bars
+        self.file_path = file_path
         self._data: Optional[pd.DataFrame] = None
 
     def load(self, file_path: Optional[str] = None) -> List[Bar]:
         """Load bars from the configured source.
 
         Args:
-            file_path: Path to CSV/Parquet file (required for csv/parquet sources)
+            file_path: Path to CSV/Parquet file (overrides self.file_path if provided)
 
         Returns:
             List of Bar objects sorted by time (ascending)
@@ -81,14 +84,17 @@ class BarDataSource:
         Raises:
             ValueError: If source is invalid or file_path is missing
         """
+        # Use provided file_path or fall back to stored file_path
+        path = file_path or self.file_path
+
         if self.source == "csv":
-            if not file_path:
+            if not path:
                 raise ValueError("file_path required for CSV source")
-            df = self._load_csv(file_path)
+            df = self._load_csv(path)
         elif self.source == "parquet":
-            if not file_path:
+            if not path:
                 raise ValueError("file_path required for Parquet source")
-            df = self._load_parquet(file_path)
+            df = self._load_parquet(path)
         elif self.source == "mt5":
             df = self._load_mt5()
         else:

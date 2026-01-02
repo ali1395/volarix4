@@ -347,6 +347,8 @@ class BacktestEngine:
                 "buy_signals": self.buy_signals,
                 "sell_signals": self.sell_signals,
                 "hold_signals": self.hold_signals,
+                "winning_trades": 0,
+                "losing_trades": 0,
                 "net_profit_usd": 0.0,
                 "gross_profit_usd": 0.0,
                 "gross_loss_usd": 0.0,
@@ -354,7 +356,8 @@ class BacktestEngine:
                 "profit_factor": 0.0,
                 "max_drawdown_usd": 0.0,
                 "max_drawdown_pct": 0.0,
-                "final_balance": self.balance
+                "final_balance": self.balance,
+                "return_pct": 0.0
             }
 
         # Calculate metrics

@@ -5,6 +5,9 @@
 
   "symbol": "EURUSD",
   "timeframe": "H1",
+  "source": "csv",
+  "file_path": "tests/fixtures/EURUSD_H1_2021-2026.csv",
+
   "test_years": [2023, 2024, 2025],
   "train_years_lookback": 2,
 

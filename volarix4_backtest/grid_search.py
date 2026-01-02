@@ -221,12 +221,13 @@ class GridSearchEngine:
 
             # Create fresh data source for this combination
             data_source = BarDataSource(
-                source="mt5",
+                source=config.source,
                 symbol=config.symbol,
                 timeframe=config.timeframe,
                 start_date=config.start_date,
                 end_date=config.end_date,
-                bars=config.bars
+                bars=config.bars,
+                file_path=config.file_path
             )
 
             # Create fresh API client and broker
@@ -422,12 +423,13 @@ def _evaluate_combination_worker(
 
         # Create data source
         data_source = BarDataSource(
-            source="mt5",
+            source=merged_config.source,
             symbol=merged_config.symbol,
             timeframe=merged_config.timeframe,
             start_date=merged_config.start_date,
             end_date=merged_config.end_date,
-            bars=merged_config.bars
+            bars=merged_config.bars,
+            file_path=merged_config.file_path
         )
 
         # Create API client and broker

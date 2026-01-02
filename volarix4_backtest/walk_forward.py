@@ -246,7 +246,21 @@ class WalkForwardEngine:
             Aggregate metrics dictionary
         """
         if not results_by_year:
-            return {}
+            return {
+                "total_trades": 0,
+                "total_years": 0,
+                "avg_trades_per_year": 0.0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate": 0.0,
+                "aggregate_net_profit": 0.0,
+                "aggregate_gross_profit": 0.0,
+                "aggregate_gross_loss": 0.0,
+                "profit_factor": 0.0,
+                "aggregate_return_pct": 0.0,
+                "avg_net_profit_per_year": 0.0,
+                "years_tested": []
+            }
 
         # Combine all trades
         all_trades = []

@@ -22,6 +22,10 @@ class BacktestConfig:
     symbol: str = "EURUSD"
     timeframe: str = "H1"
 
+    # Data source configuration
+    source: str = "mt5"  # Data source: "mt5", "csv", or "parquet"
+    file_path: Optional[str] = None  # Path to CSV/Parquet file (required for csv/parquet source)
+
     # Data range (legacy - use test_years for year-based walk-forward)
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
