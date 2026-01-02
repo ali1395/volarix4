@@ -920,6 +920,11 @@ def create_app() -> FastAPI:
                 reason=f"Error: {str(e)}"
             )
 
+        finally:
+            # This runs regardless of which return statement executes
+            duration = time.time() - start_time
+            print(f"[/signal] Request processed in {duration:.3f}s")
+
     @app.get("/")
     async def root():
         """Root endpoint with API info"""

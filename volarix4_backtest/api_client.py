@@ -76,6 +76,9 @@ class SignalApiClient:
         self.retry_delay = retry_delay
         self.logger = logger or logging.getLogger(__name__)
 
+        # Create session for connection pooling (HUGE performance boost!)
+        self.session = requests.Session()
+
         # Stats tracking
         self.total_requests = 0
         self.failed_requests = 0
@@ -233,7 +236,7 @@ class SignalApiClient:
             try:
                 self.logger.debug(f"POST /signal (attempt {attempt + 1}/{self.max_retries})")
 
-                response = requests.post(
+                response = self.session.post(
                     url,
                     json=payload,
                     timeout=self.timeout
@@ -284,3 +287,7 @@ class SignalApiClient:
             "total_retry_count": self.total_retry_count,
             "success_rate": (self.total_requests - self.failed_requests) / max(self.total_requests, 1)
         }
+
+    def close(self):
+        """Close the HTTP session and release resources."""
+        self.session.close()

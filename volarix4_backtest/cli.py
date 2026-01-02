@@ -292,6 +292,9 @@ def main():
     logger.info(f"Success Rate: {api_stats['success_rate'] * 100:.2f}%")
     logger.info("=" * 70)
 
+    # Cleanup
+    api_client.close()
+
     logger.info("\nBacktest complete!")
     return 0
 
