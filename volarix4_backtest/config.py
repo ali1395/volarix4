@@ -16,7 +16,7 @@ class BacktestConfig:
     """
 
     # Execution mode
-    mode: Literal["single", "walk_forward", "grid_search"] = "walk_forward"
+    mode: Literal["single", "walk_forward", "grid_search"] = "grid_search"
 
     # Trading pair and timeframe
     symbol: str = "EURUSD"
@@ -117,13 +117,17 @@ class BacktestConfig:
         with open(filepath, 'r') as f:
             data = json.load(f)
 
-        # Convert date strings to datetime if present
-        if 'start_date' in data and data['start_date']:
-            data['start_date'] = datetime.strptime(data['start_date'], "%Y-%m-%d")
-        if 'end_date' in data and data['end_date']:
-            data['end_date'] = datetime.strptime(data['end_date'], "%Y-%m-%d")
+        # Remove non-dataclass fields (like "comment")
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
 
-        return cls(**data)
+        # Convert date strings to datetime if present
+        if 'start_date' in filtered_data and filtered_data['start_date']:
+            filtered_data['start_date'] = datetime.strptime(filtered_data['start_date'], "%Y-%m-%d")
+        if 'end_date' in filtered_data and filtered_data['end_date']:
+            filtered_data['end_date'] = datetime.strptime(filtered_data['end_date'], "%Y-%m-%d")
+
+        return cls(**filtered_data)
 
     def to_json(self, filepath: str):
         """Save configuration to JSON file.
