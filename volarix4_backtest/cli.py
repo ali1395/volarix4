@@ -74,7 +74,7 @@ def parse_args():
     # Execution settings
     parser.add_argument("--fill-at", type=str, default="next_open", choices=["next_open", "signal_close"],
                         help="When to fill entries: next_open (no peeking) or signal_close")
-    parser.add_argument("--warmup-bars", type=int, default=200,
+    parser.add_argument("--warmup-bars", type=int, default=400,
                         help="Minimum bars before first signal request")
 
     # Output settings

@@ -57,7 +57,7 @@ class BacktestConfig:
 
     # Execution settings
     fill_at: str = "next_open"  # When to fill: "next_open" (default) or "signal_close"
-    warmup_bars: int = 200  # Minimum bars before first signal request
+    warmup_bars: int = 400  # Minimum bars before first signal request
 
     # Output settings
     output_dir: str = "./backtest_results"

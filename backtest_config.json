@@ -28,7 +28,7 @@
   "risk_percent_per_trade": 1.0,
 
   "fill_at": "next_open",
-  "warmup_bars": 200,
+  "warmup_bars": 400,
 
   "output_dir": "./backtest_results",
   "save_trades_csv": true,
