@@ -197,9 +197,81 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup_event():
-        """Initialize MT5 connection on startup"""
-        logger.info("Starting Volarix 4 API...")
-        logger.info("MT5 connection will be established on first request")
+        """Initialize MT5 connection and pre-load S/R cache on startup"""
+        try:
+            print("[STARTUP] Starting Volarix 4 API...", flush=True)
+            logger.info("Starting Volarix 4 API...")
+            logger.info("MT5 connection will be established on first request")
+
+            # Pre-load S/R levels for common pairs
+            logger.info("=" * 70)
+            logger.info("PRE-LOADING S/R LEVELS CACHE")
+            logger.info("=" * 70)
+            print("\n" + "=" * 70)
+            print("PRE-LOADING S/R LEVELS CACHE")
+            print("=" * 70)
+
+            from volarix4.core.sr_cache import get_sr_cache
+            from volarix4.utils.helpers import calculate_pip_value
+
+            cache = get_sr_cache()
+            print(f"[STARTUP] Cache instance created: {cache}", flush=True)
+
+            # Pre-load for EURUSD H1 (most common for backtesting)
+            # You can add more symbols/timeframes as needed
+            symbols_to_cache = [
+                ("EURUSD", "H1"),
+                # Add more: ("GBPUSD", "H1"), ("USDJPY", "H1"), etc.
+            ]
+
+            print(f"Symbols to cache: {symbols_to_cache}", flush=True)
+
+            for symbol, timeframe in symbols_to_cache:
+                print(f"\nProcessing {symbol} {timeframe}...", flush=True)
+                try:
+                    pip_value = calculate_pip_value(symbol)
+                    print(f"[STARTUP] Calling cache.preload...", flush=True)
+                    cache.preload(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        years=5,
+                        lookback_bars=400,  # Match backtest lookback
+                        pip_value=pip_value,
+                        min_score=60.0,
+                        force_recalculate=True  # FORCE FULL RECALCULATION
+                    )
+                    print(f"[STARTUP] cache.preload completed for {symbol} {timeframe}", flush=True)
+                except Exception as e:
+                    error_msg = f"Failed to preload {symbol} {timeframe}: {e}"
+                    logger.error(error_msg, exc_info=True)
+                    print(f"[STARTUP ERROR] {error_msg}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+
+            print(f"[STARTUP] Getting cache stats...", flush=True)
+            stats = cache.get_cache_stats()
+            print(f"[STARTUP] Cache stats: {stats}", flush=True)
+
+            logger.info("=" * 70)
+            logger.info("S/R CACHE READY")
+            logger.info(f"Cached {stats['cached_pairs']} symbol/timeframe pairs")
+            logger.info("=" * 70)
+
+            print("\n" + "=" * 70)
+            print("S/R CACHE READY")
+            print(f"Cached {stats['cached_pairs']} symbol/timeframe pairs")
+            print("=" * 70 + "\n")
+            print(flush=True)
+
+            print("[STARTUP] Startup event completing...", flush=True)
+            logger.info("Startup event completed successfully")
+            print("[STARTUP] ✓ Startup event completed successfully\n", flush=True)
+
+        except Exception as e:
+            print(f"[STARTUP FATAL ERROR] {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            raise
 
     @app.on_event("shutdown")
     async def shutdown_event():
@@ -473,17 +545,39 @@ def create_app() -> FastAPI:
                 'reason': trend_info['reason']
             })
 
-            # 5. Detect S/R levels
+            # 5. Detect S/R levels (using cache if available)
             pip_value = calculate_pip_value(request.symbol)
-            levels = detect_sr_levels(
-                df,
-                min_score=SR_CONFIG["min_level_score"],
-                pip_value=pip_value
+
+            # Try to get levels from cache first
+            from volarix4.core.sr_cache import get_sr_cache
+            cache = get_sr_cache()
+
+            # Look up pre-calculated S/R levels for this bar
+            levels = cache.get_levels_for_bar(
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                bar_time=decision_bar_datetime
             )
-            log_signal_details(logger, "SR_DETECTION", {
-                'levels_count': len(levels),
-                'levels': levels[:5]  # Log top 5
-            })
+
+            # Fall back to real-time calculation if cache miss
+            if levels is None:
+                logger.warning("Cache miss - calculating S/R levels on-the-fly")
+                levels = detect_sr_levels(
+                    df,
+                    min_score=SR_CONFIG["min_level_score"],
+                    pip_value=pip_value
+                )
+                log_signal_details(logger, "SR_DETECTION", {
+                    'source': 'real-time',
+                    'levels_count': len(levels),
+                    'levels': levels[:5]  # Log top 5
+                })
+            else:
+                log_signal_details(logger, "SR_DETECTION", {
+                    'source': 'cache',
+                    'levels_count': len(levels),
+                    'levels': levels[:5]  # Log top 5
+                })
 
             if not levels:
                 logger.info("No significant S/R levels found")
@@ -950,6 +1044,13 @@ def create_app() -> FastAPI:
             "mt5_connected": mt5_connected,
             "version": "4.0.0"
         }
+
+    @app.get("/cache/stats")
+    async def cache_stats():
+        """Get S/R cache statistics"""
+        from volarix4.core.sr_cache import get_sr_cache
+        cache = get_sr_cache()
+        return cache.get_cache_stats()
 
     return app
 

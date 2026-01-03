@@ -109,7 +109,7 @@ if __name__ == "__main__":
 
     # Test 1: Logging setup
     print("\n1. Testing logging setup...")
-    logger = setup_logging("INFO")
+    logger = setup_logging("ERROR")
     logger.info("Logger initialized successfully")
     logger.debug("This debug message won't show at INFO level")
 

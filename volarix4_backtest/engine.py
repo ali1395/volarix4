@@ -101,7 +101,7 @@ class BacktestEngine:
 
         for i in range(self.config.warmup_bars, len(self.bars)):
             current_bar = self.bars[i]
-            st=time()
+
             # Update open position first (if any)
             if self.open_trade:
                 self._update_open_position(current_bar)
@@ -131,7 +131,6 @@ class BacktestEngine:
                     f"({i - self.config.warmup_bars}/{len(self.bars) - self.config.warmup_bars} bars) "
                     f"| Trades: {len(self.trades)} | Balance: ${self.balance:,.2f}"
                 )
-            print(f"Bar {i} processed in {time()-st:.2f} seconds", end='\r')
         # Close any remaining open position at last bar
         if self.open_trade:
             self.logger.info("Closing remaining open position at end of backtest")

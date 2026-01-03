@@ -27,7 +27,8 @@ def setup_logger(name: str = "volarix4", log_dir: str = "logs", level: str = "IN
 
     # Create logger
     logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper()))
+    # logger.setLevel(getattr(logging, level.upper()))
+    logger.setLevel("ERROR")  # Set to ERROR to capture all logs in file
 
     # Avoid duplicate handlers
     if logger.handlers:
